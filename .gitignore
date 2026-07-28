@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+pretrained_models/
+backend/storage/speakers.json
+.DS_Store
+.env

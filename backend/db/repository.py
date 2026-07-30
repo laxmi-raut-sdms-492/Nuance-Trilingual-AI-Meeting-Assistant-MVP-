@@ -250,14 +250,30 @@ def _apply_children(session, meeting: Meeting, record: dict):
 
 def list_meetings() -> list[dict]:
     with session_scope() as session:
-        rows = session.scalars(select(Meeting).order_by(Meeting.uploaded_at.desc())).all()
+        rows = session.scalars(
+            select(Meeting)
+            .where(Meeting.deleted_at.is_(None))
+            .order_by(Meeting.uploaded_at.desc())
+        ).all()
         return [_to_dict(m) for m in rows]
 
 
 def get_meeting(meeting_id: str) -> dict | None:
     with session_scope() as session:
         meeting = session.get(Meeting, meeting_id)
-        return _to_dict(meeting) if meeting else None
+        if meeting is None or meeting.deleted_at is not None:
+            return None
+        return _to_dict(meeting)
+
+
+def list_trash() -> list[dict]:
+    with session_scope() as session:
+        rows = session.scalars(
+            select(Meeting)
+            .where(Meeting.deleted_at.is_not(None))
+            .order_by(Meeting.deleted_at.desc())
+        ).all()
+        return [_to_dict(m) for m in rows]
 
 
 def add_meeting(record: dict) -> dict:
@@ -305,6 +321,9 @@ def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None
     `new_name` collapsing onto an existing speaker (e.g. renaming Speaker_04
     to a name already used by Speaker_01) merges their stats rather than
     violating the (meeting_id, name) uniqueness constraint on speaker_stats.
+
+    Always refreshes `participants` from the surviving speaker set so the UI
+    never shows "3 Speakers" after two voices were merged into one.
     """
     new_name = new_name.strip()
     if not new_name:
@@ -333,26 +352,162 @@ def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None
                 )
             ).first()
             if existing is not None and existing.id != old_stat.id:
-                # target name already exists on another speaker in this meeting
-                # -- merge seconds/pct into it and drop the old row.
                 existing.seconds += old_stat.seconds
-                existing.pct += old_stat.pct
                 session.delete(old_stat)
             else:
                 old_stat.name = new_name
 
         session.flush()
+        # Bulk UPDATE bypasses the identity map — reload lines before rebuilding
+        # stats so merged names are reflected in participants / talk-time bars.
+        session.expire(meeting)
+        meeting = session.get(Meeting, meeting_id)
+        _refresh_speaker_stats_from_transcript(session, meeting)
+        session.expire(meeting)
+        meeting = session.get(Meeting, meeting_id)
+        return _to_dict(meeting)
+
+
+def _format_talk_time(seconds: float) -> str:
+    total = int(round(seconds))
+    minutes, secs = divmod(total, 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _refresh_speaker_stats_from_transcript(session, meeting: Meeting) -> None:
+    """
+    Rebuild talk-time bars and participants from transcript lines.
+
+    Keeps colours from the first line of each display name. Called after
+    renames/merges so orphan Speaker_XX rows and stale participant counts
+    cannot linger.
+    """
+    totals: dict[str, float] = {}
+    colors: dict[str, str | None] = {}
+    order: list[str] = []
+    for line in sorted(meeting.transcript_lines, key=lambda t: t.position):
+        name = line.speaker
+        if name not in totals:
+            order.append(name)
+            colors[name] = line.color
+        totals[name] = totals.get(name, 0.0) + max(0.0, float(line.end_sec) - float(line.start_sec))
+
+    grand = sum(totals.values())
+    for stat in list(meeting.speaker_stats):
+        session.delete(stat)
+    session.flush()
+
+    for position, name in enumerate(order):
+        seconds = totals[name]
+        session.add(
+            SpeakerStat(
+                meeting_id=meeting.id,
+                position=position,
+                name=name,
+                seconds=round(seconds, 1),
+                time_label=_format_talk_time(seconds),
+                pct=round(seconds / grand * 100, 1) if grand > 0 else 0.0,
+                color=colors.get(name),
+            )
+        )
+
+    meeting.participants = len(order)
+    session.flush()
+
+
+def speaker_time_ranges(
+    meeting_id: str,
+    *,
+    speaker: str | None = None,
+    speaker_label: str | None = None,
+) -> list[tuple[float, float]]:
+    """
+    (start_sec, end_sec) ranges for one speaker in a meeting.
+
+    Match on display `speaker` and/or diarization `speaker_label` so enrollment
+    still works after a cosmetic rename (rename updates `speaker` only).
+    """
+    if not speaker and not speaker_label:
+        return []
+
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None:
+            return []
+
+        ranges: list[tuple[float, float]] = []
+        for line in meeting.transcript_lines:
+            matched = False
+            if speaker and line.speaker == speaker:
+                matched = True
+            if speaker_label and line.speaker_label == speaker_label:
+                matched = True
+            if matched:
+                ranges.append((float(line.start_sec), float(line.end_sec)))
+        return ranges
+
+
+def set_speaker_identification(
+    meeting_id: str,
+    *,
+    speaker: str,
+    speaker_label: str | None,
+    identified_as: str,
+    confidence: float,
+) -> dict | None:
+    """Update identified_as / confidence on lines for one speaker (after rename)."""
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None:
+            return None
+
+        for line in meeting.transcript_lines:
+            if line.speaker != speaker and (
+                not speaker_label or line.speaker_label != speaker_label
+            ):
+                continue
+            if line.speaker == speaker or (
+                speaker_label and line.speaker_label == speaker_label
+            ):
+                line.identified_as = identified_as
+                line.confidence = float(confidence)
+
+        session.flush()
+        session.expire(meeting)
         meeting = session.get(Meeting, meeting_id)
         return _to_dict(meeting)
 
 
 def delete_meeting(meeting_id: str) -> bool:
-    """Delete the meeting AND its recording. This is what the API exposes."""
+    """Soft delete: mark the meeting trashed."""
     with session_scope() as session:
-        # ON DELETE CASCADE removes every child row; no manual cleanup.
-        result = session.execute(delete(Meeting).where(Meeting.id == meeting_id))
-        if result.rowcount == 0:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None or meeting.deleted_at is not None:
             return False
+        meeting.deleted_at = dt.datetime.now(dt.timezone.utc)
+    return True
+
+
+def restore_meeting(meeting_id: str) -> dict | None:
+    """Move a meeting out of Trash and back into the active list."""
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None or meeting.deleted_at is None:
+            return None
+        meeting.deleted_at = None
+        session.flush()
+        return _to_dict(meeting)
+
+
+def purge_meeting(meeting_id: str) -> bool:
+    """Permanently delete a trashed meeting AND its recording. No undo."""
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None or meeting.deleted_at is None:
+            return False
+        session.execute(delete(Meeting).where(Meeting.id == meeting_id))
 
     _delete_audio(meeting_id)
     return True
@@ -417,16 +572,23 @@ def search(needle: str, limit: int = 50) -> list[dict]:
 
         hit_ids = set(
             session.scalars(
-                select(TranscriptLine.meeting_id).where(line_match).distinct()
+                select(TranscriptLine.meeting_id)
+                .join(Meeting, Meeting.id == TranscriptLine.meeting_id)
+                .where(line_match, Meeting.deleted_at.is_(None))
+                .distinct()
             ).all()
-        ) | set(session.scalars(select(Meeting.id).where(meeting_match)).all())
+        ) | set(
+            session.scalars(
+                select(Meeting.id).where(meeting_match, Meeting.deleted_at.is_(None))
+            ).all()
+        )
 
         if not hit_ids:
             return []
 
         meetings = session.scalars(
             select(Meeting)
-            .where(Meeting.id.in_(hit_ids))
+            .where(Meeting.id.in_(hit_ids), Meeting.deleted_at.is_(None))
             .order_by(Meeting.uploaded_at.desc())
             .limit(limit)
         ).all()

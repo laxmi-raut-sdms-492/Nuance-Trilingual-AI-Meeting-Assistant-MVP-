@@ -107,12 +107,39 @@ DIARIZATION_EMA_ALPHA = 0.15                # centroid update rate — constant,
 HYSTERESIS_BONUS = 0.05                     # discount applied to "the speaker who just spoke" to prevent flip-flopping
 THRESHOLD_GROWTH_PER_SEGMENT = 0.01         # mature clusters get a looser (more forgiving) threshold
 THRESHOLD_GROWTH_CAP = 0.15                 # ...up to this much looser
-CLUSTER_MERGE_DISTANCE = 0.25               # if two clusters' centroids end up this close, merge them
+CLUSTER_MERGE_DISTANCE = 0.40               # if two clusters' centroids end up this close, merge them
 CLUSTER_MERGE_CHECK_EVERY = 10              # check for mergeable clusters every N segments
+
+# Reject brand-new speaker labels for short clips — a 2–3s leftover at the
+# end of a turn is almost always the same person (or a brief reply), not a
+# new participant. Prevents Speaker_02 ghosts like "So please, I am okay."
+MIN_NEW_CLUSTER_SECONDS = float(os.getenv("MIN_NEW_CLUSTER_SECONDS", "5.0"))
+
+# If two clusters in the SAME meeting are at least this similar, treat them as
+# the same person when one is already named (fixes diarization splits).
+WITHIN_MEETING_MERGE_SIMILARITY = float(
+    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.35")
+)
+# Below this, embedding evidence is too weak — use turn-taking / continuity
+# instead of leaving a ghost Speaker_XX.
+SHORT_LEFTOVER_SECONDS = float(os.getenv("SHORT_LEFTOVER_SECONDS", "5.0"))
+INCONCLUSIVE_MERGE_SIMILARITY = float(
+    os.getenv("INCONCLUSIVE_MERGE_SIMILARITY", "0.40")
+)
 
 # --- Identification ---
 # Cosine similarity (not distance) between a segment and an enrolled voice.
-IDENTIFICATION_SIMILARITY_THRESHOLD = 0.55
+# Auto-label only when similarity >= this value. Override with
+# IDENTIFICATION_SIMILARITY_THRESHOLD. 0.55 matches typical ECAPA same-speaker
+# scores across different mics/recordings; 0.95 is too strict for real audio.
+IDENTIFICATION_SIMILARITY_THRESHOLD = float(
+    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.55")
+)
+# If the top two enrolled matches are this close, treat the result as
+# ambiguous and keep the generic diarization label instead of guessing.
+IDENTIFICATION_AMBIGUITY_MARGIN = float(
+    os.getenv("IDENTIFICATION_AMBIGUITY_MARGIN", "0.03")
+)
 
 # --- Summarization ---
 # Summary, decisions, action items and keywords. Local Ollama when it is

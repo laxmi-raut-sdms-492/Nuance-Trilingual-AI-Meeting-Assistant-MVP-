@@ -143,6 +143,11 @@ def list_meetings():
     return {"meetings": [_without_transcript(m) for m in store.list_meetings()]}
 
 
+@router.get("/meetings/trash")
+def get_trash():
+    return {"meetings": [_without_transcript(m) for m in store.list_trash()]}
+
+
 @router.get("/meetings/{meeting_id}")
 def get_meeting(meeting_id: str):
     meeting = store.get_meeting(meeting_id)
@@ -215,23 +220,266 @@ def create_meeting(
 def delete_meeting(meeting_id: str):
     if not store.delete_meeting(meeting_id):
         raise HTTPException(404, "Meeting not found.")
-    return {"status": "deleted", "id": meeting_id}
+    return {"status": "trashed", "id": meeting_id}
+
+
+@router.post("/meetings/{meeting_id}/restore")
+def restore_meeting(meeting_id: str):
+    record = store.restore_meeting(meeting_id)
+    if record is None:
+        raise HTTPException(404, "Meeting not found in trash.")
+    return record
+
+
+@router.delete("/meetings/{meeting_id}/purge")
+def purge_meeting(meeting_id: str):
+    if not store.purge_meeting(meeting_id):
+        raise HTTPException(404, "Meeting not found in trash.")
+    return {"status": "purged", "id": meeting_id}
 
 @router.patch("/meetings/{meeting_id}/speakers/{speaker_label}")
-def rename_speaker(meeting_id: str, speaker_label: str, name: str = Form(...)):
+def rename_speaker(
+    meeting_id: str,
+    speaker_label: str,
+    name: str = Form(...),
+    remember: bool = Form(True),
+    overwrite: bool = Form(False),
+):
     """
     Rename a diarized speaker label (e.g. Speaker_00) to a human name across
-    one meeting's transcript and speaker stats. Purely cosmetic -- it does not
-    touch voice profiles or affect future diarization; see /enroll for that.
+    one meeting's transcript and speaker stats.
+
+    By default also permanently enrolls this speaker's voice from the meeting
+    audio (remember=true) so every future meeting auto-labels them. Pass
+    remember=false for a one-meeting-only cosmetic rename. overwrite=true
+    replaces an existing profile instead of blending.
     """
     new_name = name.strip()
     if not new_name:
         raise HTTPException(422, "Name cannot be empty.")
 
+    # Capture time ranges before rename so we still find segments if the
+    # client passed the display name that is about to change.
+    ranges = store.speaker_time_ranges(
+        meeting_id, speaker=speaker_label, speaker_label=speaker_label
+    )
+
     meeting = store.rename_speaker(meeting_id, speaker_label, new_name)
     if meeting is None:
         raise HTTPException(404, "Meeting not found.")
+
+    enrollment = None
+    if remember:
+        path = store.audio_path(meeting_id)
+        if path is None:
+            raise HTTPException(400, "No audio stored for this meeting; cannot enroll voice.")
+        if not ranges:
+            ranges = store.speaker_time_ranges(
+                meeting_id, speaker=new_name, speaker_label=speaker_label
+            )
+        if not ranges:
+            raise HTTPException(
+                400,
+                "No transcript segments found for this speaker to build a voice profile.",
+            )
+        try:
+            from models.speaker_enrollment import enroll_from_meeting_audio
+
+            enrollment = enroll_from_meeting_audio(
+                _identifier(),
+                audio_path=path,
+                segments=ranges,
+                name=new_name,
+                overwrite=overwrite,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except Exception as exc:
+            logger.exception(f"[{meeting_id}] enroll-from-meeting failed")
+            raise HTTPException(400, f"Could not enroll voice: {exc}") from exc
+
+    if enrollment is not None:
+        return {**meeting, "enrollment": enrollment}
     return meeting
+
+
+@router.post("/meetings/{meeting_id}/speakers/{speaker_label}/enroll")
+def enroll_speaker_from_meeting(
+    meeting_id: str,
+    speaker_label: str,
+    name: str = Form(...),
+    overwrite: bool = Form(False),
+):
+    """
+    Enroll a reusable voice profile from this meeting's audio for one speaker.
+
+    Separate from rename: call after renaming (or with the desired display
+    name) when the user opts into "Remember this speaker for future meetings".
+    """
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(422, "Name cannot be empty.")
+
+    meeting = store.get_meeting(meeting_id)
+    if meeting is None:
+        raise HTTPException(404, "Meeting not found.")
+
+    path = store.audio_path(meeting_id)
+    if path is None:
+        raise HTTPException(400, "No audio stored for this meeting; cannot enroll voice.")
+
+    ranges = store.speaker_time_ranges(
+        meeting_id, speaker=speaker_label, speaker_label=speaker_label
+    )
+    if not ranges:
+        ranges = store.speaker_time_ranges(meeting_id, speaker=new_name)
+    if not ranges:
+        raise HTTPException(
+            400,
+            "No transcript segments found for this speaker to build a voice profile.",
+        )
+
+    try:
+        from models.speaker_enrollment import enroll_from_meeting_audio
+
+        return enroll_from_meeting_audio(
+            _identifier(),
+            audio_path=path,
+            segments=ranges,
+            name=new_name,
+            overwrite=overwrite,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        logger.exception(f"[{meeting_id}] enroll-from-meeting failed")
+        raise HTTPException(400, f"Could not enroll voice: {exc}") from exc
+
+
+@router.post("/meetings/{meeting_id}/identify-speakers")
+def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
+    """
+    Automatically label speakers on an already-processed meeting.
+
+    1) Self-intros / mutual greetings in the transcript
+    2) Match against enrolled voice profiles
+    3) Merge same-meeting fragments (Speaker_02 ≈ already-named Anushka)
+
+    Voice enrollment for resolved names runs so future meetings stay permanent.
+    """
+    meeting = store.get_meeting(meeting_id)
+    if meeting is None:
+        raise HTTPException(404, "Meeting not found.")
+
+    transcript = meeting.get("transcript") or []
+    path = store.audio_path(meeting_id)
+
+    from models.speaker_enrollment import (
+        identify_speakers_in_meeting,
+        introduction_labels_from_transcript,
+        enroll_from_meeting_audio,
+        same_meeting_fragment_merges,
+    )
+
+    matches: list[dict] = []
+
+    for intro in introduction_labels_from_transcript(transcript):
+        matches.append(intro)
+
+    claimed = {m["speaker_label"] for m in matches}
+    if path and _identifier().list_speakers():
+        try:
+            for voice in identify_speakers_in_meeting(
+                _identifier(),
+                audio_path=path,
+                transcript=transcript,
+            ):
+                if voice.get("matched") and voice["speaker_label"] not in claimed:
+                    matches.append(voice)
+                    claimed.add(voice["speaker_label"])
+        except Exception:
+            logger.exception(f"[{meeting_id}] voice identify-speakers failed")
+
+    # Include humans already shown on the transcript (e.g. prior rename).
+    named_labels: dict[str, str] = {}
+    for line in transcript:
+        label = line.get("speaker_label") or line.get("speaker")
+        display = line.get("speaker") or label
+        if not label or not display:
+            continue
+        if re.match(r"(?i)^speaker[_\s]?\d+$", str(display).strip()):
+            continue
+        named_labels.setdefault(label, display)
+    for match in matches:
+        if match.get("matched"):
+            named_labels[match["speaker_label"]] = match["identified_as"]
+
+    if path is not None or named_labels:
+        try:
+            for frag in same_meeting_fragment_merges(
+                audio_path=path,
+                transcript=transcript,
+                named_labels=named_labels,
+            ):
+                if frag["speaker_label"] not in claimed:
+                    matches.append(frag)
+                    claimed.add(frag["speaker_label"])
+        except Exception:
+            logger.exception(f"[{meeting_id}] fragment merge failed")
+
+    applied = []
+    for match in matches:
+        if not match.get("matched"):
+            continue
+        old_name = match["old_name"]
+        new_name = match["identified_as"]
+        if old_name != new_name:
+            updated = store.rename_speaker(meeting_id, old_name, new_name)
+            if updated is None:
+                continue
+        store.set_speaker_identification(
+            meeting_id,
+            speaker=new_name,
+            speaker_label=match["speaker_label"],
+            identified_as=new_name,
+            confidence=match.get("confidence") or 0.0,
+        )
+        if path and match.get("source") in (
+            "introduction",
+            "greeting",
+            "fragment_merge",
+            "fragment_merge_weak",
+            "turn_taking",
+            "continuity",
+        ):
+            ranges = store.speaker_time_ranges(
+                meeting_id, speaker=new_name, speaker_label=match["speaker_label"]
+            )
+            if ranges:
+
+                def _enroll(name=new_name, segs=ranges):
+                    try:
+                        enroll_from_meeting_audio(
+                            _identifier(),
+                            audio_path=path,
+                            segments=segs,
+                            name=name,
+                            overwrite=False,
+                        )
+                    except Exception:
+                        logger.exception(
+                            f"[{meeting_id}] auto-enroll after label failed"
+                        )
+
+                background_tasks.add_task(_enroll)
+        applied.append(match)
+
+    meeting = store.get_meeting(meeting_id)
+    return {
+        "matches": matches,
+        "applied": applied,
+        "meeting": meeting,
+    }
 
 
 @router.get("/meetings/{meeting_id}/audio")

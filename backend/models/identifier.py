@@ -5,9 +5,8 @@ Profiles live in PostgreSQL (the `speakers` table), not speakers.json. The
 behaviour is unchanged:
 
   - Enrolling the same name again BLENDS samples (running average, weighted by
-    how many samples already exist) rather than overwriting. The UI's "record a
-    6-second sample" button therefore makes an existing profile more robust
-    each time it is used, with no UI change needed.
+    how many samples already exist) rather than overwriting — unless
+    overwrite=True is passed explicitly.
   - Embeddings are assumed L2-normalised already (see models/embedding.py),
     which is what makes averaging multiple enrollment samples meaningful
     instead of being skewed by whichever sample was loudest.
@@ -16,18 +15,22 @@ Profiles are cached in memory and reloaded when the table changes, because
 identify() runs once per diarized segment — hitting the database on every
 segment of an hour-long meeting would be pointless traffic for data that
 changes only when someone enrolls.
+
+Cosine matching + ambiguity rejection live in models.speaker_matcher so they
+can be unit-tested without a database.
 """
 
 import json
 import logging
+import re
 
 import numpy as np
-from scipy.spatial.distance import cosine
 from sqlalchemy import func, select
 
 from config import IDENTIFICATION_SIMILARITY_THRESHOLD
 from db.models import Speaker
 from db.session import session_scope
+from models.speaker_matcher import UNKNOWN, match_speaker
 
 logger = logging.getLogger("identifier")
 
@@ -72,26 +75,35 @@ class SpeakerIdentifier:
 
     # -------------------------------------------------------------- public
 
-    def enroll(self, name: str, embedding: np.ndarray):
+    def enroll(self, name: str, embedding: np.ndarray, *, overwrite: bool = False):
         """
         Add a sample for this speaker.
 
-        If the name already has samples, blend into the existing profile
-        (weighted average) rather than overwriting — multiple enrollments make
-        a profile more robust to distance, volume and mic-angle variation.
-
-        The read-modify-write happens inside one transaction, so two
-        simultaneous enrollments of the same name cannot lose a sample.
+        Names are stored in Title Case for Latin text so 'anushka' and
+        'Anushka' are one profile. If the name already has samples and
+        overwrite is False, blend into the existing profile.
         """
-        with session_scope() as session:
-            row = session.scalars(select(Speaker).where(Speaker.name == name)).one_or_none()
+        name = name.strip()
+        if re.search(r"[A-Za-z]", name):
+            name = name.title()
 
-            if row is not None:
+        with session_scope() as session:
+            row = session.scalars(
+                select(Speaker).where(func.lower(Speaker.name) == name.lower())
+            ).one_or_none()
+
+            if row is not None and overwrite:
+                row.name = name
+                row.centroid = json.dumps(np.asarray(embedding).tolist())
+                row.sample_count = 1
+                logger.info(f"enroll: overwrote profile for '{name}'")
+            elif row is not None:
                 existing = np.array(json.loads(row.centroid), dtype=np.float32)
                 n = row.sample_count
                 blended = (existing * n + embedding) / (n + 1)
                 norm = np.linalg.norm(blended)
                 blended = blended / norm if norm > 0 else blended
+                row.name = name  # canonicalize casing
                 row.centroid = json.dumps(blended.tolist())
                 row.sample_count = n + 1
                 logger.info(f"enroll: blended new sample into '{name}' (now {n + 1} samples)")
@@ -120,21 +132,8 @@ class SpeakerIdentifier:
 
     def identify(self, embedding: np.ndarray) -> tuple[str, float]:
         """Returns (name, similarity_score). name is 'Unknown' below threshold."""
+        # Pick up enrollments made in another worker / via import without a restart.
+        self.refresh(force=False)
         if not self._cache:
-            return "Unknown", 0.0
-
-        best_name, best_score = "Unknown", -1.0
-        for name, profile in self._cache.items():
-            similarity = 1 - cosine(embedding, profile["centroid"])
-            if similarity > best_score:
-                best_name, best_score = name, similarity
-
-        if best_score < self.threshold:
-            logger.info(
-                f"identify: best match '{best_name}' at {best_score:.3f} "
-                f"< threshold {self.threshold} -> Unknown"
-            )
-            return "Unknown", round(float(best_score), 3)
-
-        logger.info(f"identify: matched '{best_name}' at {best_score:.3f}")
-        return best_name, round(float(best_score), 3)
+            return UNKNOWN, 0.0
+        return match_speaker(embedding, self._cache, threshold=self.threshold)

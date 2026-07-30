@@ -209,25 +209,39 @@ def test_failure_path_fields_are_writable():
 # ---------------------------------------------------------------------- delete
 
 
-def test_delete_cascades_to_children(audio_dir):
+def test_soft_delete_hides_from_list_but_keeps_children(audio_dir):
     record = make_record()
     repo.add_meeting(record)
 
     assert repo.delete_meeting(record["id"]) is True
     assert repo.get_meeting(record["id"]) is None
+    assert len(repo.list_trash()) == 1
+    assert repo.list_trash()[0]["id"] == record["id"]
 
     with session_scope() as session:
         remaining = session.scalars(
             select(TranscriptLine).where(TranscriptLine.meeting_id == record["id"])
         ).all()
-        assert remaining == []
+        assert len(remaining) == len(record["transcript"])
+
+
+def test_restore_moves_meeting_back(audio_dir):
+    record = make_record()
+    repo.add_meeting(record)
+    repo.delete_meeting(record["id"])
+
+    restored = repo.restore_meeting(record["id"])
+    assert restored is not None
+    assert restored["id"] == record["id"]
+    assert repo.get_meeting(record["id"]) is not None
+    assert repo.list_trash() == []
 
 
 def test_delete_missing_meeting_returns_false(audio_dir):
     assert repo.delete_meeting("MTG-nope") is False
 
 
-def test_delete_removes_the_recording(audio_dir, tmp_path):
+def test_soft_delete_keeps_the_recording(audio_dir, tmp_path):
     record = make_record()
     repo.add_meeting(record)
 
@@ -237,7 +251,21 @@ def test_delete_removes_the_recording(audio_dir, tmp_path):
     assert repo.audio_path(record["id"]) is not None
 
     repo.delete_meeting(record["id"])
+    assert repo.audio_path(record["id"]) is not None
+
+
+def test_purge_removes_the_recording(audio_dir, tmp_path):
+    record = make_record()
+    repo.add_meeting(record)
+
+    source = tmp_path / "upload.wav"
+    source.write_bytes(b"RIFF")
+    repo.save_audio(record["id"], "meeting.wav", str(source))
+
+    repo.delete_meeting(record["id"])
+    assert repo.purge_meeting(record["id"]) is True
     assert repo.audio_path(record["id"]) is None
+    assert repo.list_trash() == []
 
 
 def test_row_only_delete_keeps_the_recording(audio_dir, tmp_path):
@@ -345,6 +373,108 @@ def test_search_caps_matches_at_five_but_counts_them_all():
 def test_search_misses_return_an_empty_list():
     repo.add_meeting(make_record())
     assert repo.search("nothing here matches this") == []
+
+
+# --------------------------------------------------------- speaker enrollment
+
+
+def test_speaker_time_ranges_by_display_name_and_label():
+    repo.add_meeting(make_record())
+    by_name = repo.speaker_time_ranges("MTG-test000000", speaker="Speaker 1")
+    assert by_name == [(0.0, 4.0)]
+
+    by_label = repo.speaker_time_ranges("MTG-test000000", speaker_label="Speaker 2")
+    assert by_label == [(4.0, 9.0)]
+
+    either = repo.speaker_time_ranges(
+        "MTG-test000000", speaker="Speaker 1", speaker_label="Speaker 2"
+    )
+    assert either == [(0.0, 4.0), (4.0, 9.0)]
+
+
+def test_speaker_time_ranges_empty_without_keys():
+    repo.add_meeting(make_record())
+    assert repo.speaker_time_ranges("MTG-test000000") == []
+    assert repo.speaker_time_ranges("MTG-missing", speaker="Speaker 1") == []
+
+
+def test_rename_speaker_is_cosmetic_only():
+    repo.add_meeting(make_record())
+    updated = repo.rename_speaker("MTG-test000000", "Speaker 1", "Laxmi")
+    assert updated is not None
+    assert updated["transcript"][0]["speaker"] == "Laxmi"
+    # Diarization id preserved so enrollment can still find the segments.
+    assert updated["transcript"][0]["speaker_label"] == "Speaker 1"
+    assert updated["speakerStats"][0]["name"] == "Laxmi"
+
+
+def test_rename_merge_updates_participant_count():
+    """Merging Speaker_XX into an existing name must drop the ghost participant."""
+    repo.add_meeting(
+        make_record(
+            participants=3,
+            speakerStats=[
+                {"name": "anushka", "seconds": 13.0, "time": "13s", "pct": 48.0, "color": "#3b82f6"},
+                {"name": "Lakshmi", "seconds": 11.0, "time": "11s", "pct": 41.0, "color": "#a855f7"},
+                {"name": "Speaker_02", "seconds": 3.0, "time": "3s", "pct": 11.0, "color": "#10b981"},
+            ],
+            transcript=[
+                {
+                    "start_sec": 0.0,
+                    "end_sec": 13.0,
+                    "time": "00:00",
+                    "speaker": "anushka",
+                    "speaker_label": "Speaker_00",
+                    "identified_as": "anushka",
+                    "confidence": 0.9,
+                    "color": "#3b82f6",
+                    "language": "en",
+                    "language_name": "English",
+                    "language_prob": 0.99,
+                    "language_detected": "en",
+                    "language_fallback": False,
+                    "text": "Hello Lakshmi.",
+                },
+                {
+                    "start_sec": 13.0,
+                    "end_sec": 24.0,
+                    "time": "00:13",
+                    "speaker": "Lakshmi",
+                    "speaker_label": "Speaker_01",
+                    "identified_as": "Lakshmi",
+                    "confidence": 0.9,
+                    "color": "#a855f7",
+                    "language": "en",
+                    "language_name": "English",
+                    "language_prob": 0.99,
+                    "language_detected": "en",
+                    "language_fallback": False,
+                    "text": "Hello Anushka.",
+                },
+                {
+                    "start_sec": 24.0,
+                    "end_sec": 27.0,
+                    "time": "00:24",
+                    "speaker": "Speaker_02",
+                    "speaker_label": "Speaker_02",
+                    "identified_as": None,
+                    "confidence": 0.0,
+                    "color": "#10b981",
+                    "language": "en",
+                    "language_name": "English",
+                    "language_prob": 0.99,
+                    "language_detected": "en",
+                    "language_fallback": False,
+                    "text": "So please, I am okay.",
+                },
+            ],
+        )
+    )
+    updated = repo.rename_speaker("MTG-test000000", "Speaker_02", "anushka")
+    assert updated["participants"] == 2
+    names = {s["name"] for s in updated["speakerStats"]}
+    assert names == {"anushka", "Lakshmi"}
+    assert sum(s["seconds"] for s in updated["speakerStats"]) == 27.0
 
 
 # ------------------------------------------------------------------ misc

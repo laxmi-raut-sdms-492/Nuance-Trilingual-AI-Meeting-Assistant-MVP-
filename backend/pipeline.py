@@ -26,6 +26,7 @@ The same class drives both paths:
 """
 
 import logging
+import re
 import time
 
 import numpy as np
@@ -45,6 +46,11 @@ from models.vad import SpeechSegmenter
 from models.scd import split_on_speaker_change
 from models.asr import transcribe
 from models.identifier import SpeakerIdentifier
+from models.name_hints import (
+    extract_self_introduction_name,
+    resolve_names_from_greetings,
+)
+from models.speaker_matcher import UNKNOWN
 
 logger = logging.getLogger("pipeline")
 MIN_SPEECH_SAMPLES = int(MIN_SPEECH_SECONDS * SAMPLE_RATE)
@@ -104,7 +110,156 @@ class MeetingSession:
 
     def finish(self) -> list[dict]:
         """End of stream — drain the segment still buffered in the VAD."""
-        return self._consume(self.segmenter.flush())
+        entries = self._consume(self.segmenter.flush())
+        self.finalize_labels()
+        return entries
+
+    def finalize_labels(self) -> None:
+        """
+        Resolve display names for every diarization label, then permanently
+        enroll those voices.
+
+        Order matters:
+          1) match against already-enrolled profiles
+          2) apply text hints (self-intro / mutual greetings)
+          3) enroll resolved voices
+          4) re-match leftover Speaker_XX against enrollments (just updated)
+          5) merge same-meeting fragments (Speaker_02 ≈ Anushka's Speaker_00)
+
+        Diarization ids stay on speaker_label; only display fields change.
+        """
+        if not self.transcript:
+            return
+
+        from config import WITHIN_MEETING_MERGE_SIMILARITY
+        from models.speaker_matcher import cosine_similarity
+
+        def _is_generic(name: str) -> bool:
+            import re
+
+            return bool(re.match(r"(?i)^speaker[_\s]?\d+$", str(name or "").strip()))
+
+        # label -> (name, confidence)
+        resolved: dict[str, tuple[str, float]] = {}
+
+        if self.diarizer.clusters:
+            for label in self.diarizer.clusters:
+                name, conf = self.identifier.identify(self.diarizer.get_centroid(label))
+                if name != UNKNOWN:
+                    resolved[label] = (name, conf)
+
+        # Text hints for labels still unknown.
+        for entry in self.transcript:
+            label = entry.get("speaker_label")
+            if not label or label in resolved:
+                continue
+            hint = extract_self_introduction_name(entry.get("text") or "")
+            if hint:
+                resolved[label] = (hint, 1.0)
+
+        for label, name in resolve_names_from_greetings(self.transcript).items():
+            resolved.setdefault(label, (name, 1.0))
+
+        # Permanently enroll every resolved voice (needed before re-identify).
+        for label, (name, _conf) in list(resolved.items()):
+            if label not in self.diarizer.clusters:
+                continue
+            try:
+                self.identifier.enroll(
+                    name, self.diarizer.get_centroid(label), overwrite=False
+                )
+                logger.info(f"permanently enrolled voice profile for '{name}'")
+            except Exception as exc:
+                logger.warning(f"finalize enroll '{name}' failed: {exc}")
+
+        # Re-identify leftover clusters against profiles we just enrolled.
+        if self.diarizer.clusters:
+            self.identifier.refresh(force=True)
+            for label in self.diarizer.clusters:
+                if label in resolved:
+                    continue
+                name, conf = self.identifier.identify(self.diarizer.get_centroid(label))
+                if name != UNKNOWN:
+                    resolved[label] = (name, conf)
+                    logger.info(
+                        f"re-identify: {label} -> {name} ({conf:.3f}) after enrollment"
+                    )
+
+        # Same-meeting fragment repair via embeddings.
+        if self.diarizer.clusters:
+            named = {
+                label: (name, conf)
+                for label, (name, conf) in resolved.items()
+                if label in self.diarizer.clusters
+            }
+            for label in self.diarizer.clusters:
+                if label in resolved:
+                    continue
+                best_name, best_sim = None, -1.0
+                centroid = self.diarizer.get_centroid(label)
+                for other, (name, conf) in named.items():
+                    sim = cosine_similarity(centroid, self.diarizer.get_centroid(other))
+                    if sim > best_sim:
+                        best_name, best_sim = name, sim
+                if best_name and best_sim >= WITHIN_MEETING_MERGE_SIMILARITY:
+                    resolved[label] = (best_name, round(float(best_sim), 3))
+                    logger.info(
+                        f"within-meeting merge: {label} -> {best_name} "
+                        f"(sim={best_sim:.3f} vs named cluster)"
+                    )
+                    try:
+                        self.identifier.enroll(
+                            best_name, centroid, overwrite=False
+                        )
+                    except Exception as exc:
+                        logger.warning(f"merge enroll '{best_name}' failed: {exc}")
+
+        # Turn-taking / continuity for short leftovers embeddings couldn't resolve.
+        from models.speaker_enrollment import same_meeting_fragment_merges
+
+        named_for_merge = {label: name for label, (name, _) in resolved.items()}
+        # Also include humans already on the transcript.
+        for entry in self.transcript:
+            label = entry.get("speaker_label")
+            speaker = entry.get("speaker")
+            if label and speaker and label in resolved:
+                named_for_merge[label] = resolved[label][0]
+            elif label and speaker and not re.match(r"(?i)^speaker[_\s]?\d+$", str(speaker)):
+                named_for_merge.setdefault(label, speaker)
+
+        for frag in same_meeting_fragment_merges(
+            audio_path=None,
+            transcript=self.transcript,
+            named_labels=named_for_merge,
+        ):
+            label = frag["speaker_label"]
+            if label not in resolved:
+                resolved[label] = (frag["identified_as"], frag["confidence"])
+                logger.info(
+                    f"{frag['source']}: {label} -> {frag['identified_as']}"
+                )
+
+        for entry in self.transcript:
+            label = entry.get("speaker_label")
+            if not label:
+                continue
+            if label in resolved:
+                name, conf = resolved[label]
+                entry["identified_as"] = name
+                entry["confidence"] = conf
+                entry["speaker"] = name
+            else:
+                # Keep prior human names; only fall back to diarization id when
+                # still generic / unknown.
+                current = entry.get("speaker") or label
+                identified = entry.get("identified_as") or UNKNOWN
+                if identified != UNKNOWN and not _is_generic(str(identified)):
+                    entry["speaker"] = identified
+                elif not _is_generic(str(current)):
+                    entry["speaker"] = current
+                else:
+                    entry["identified_as"] = UNKNOWN
+                    entry["speaker"] = label
 
     # -- upload path --
 
@@ -187,7 +342,23 @@ class MeetingSession:
 
         self._language_counts[asr["language"]] = self._language_counts.get(asr["language"], 0) + 1
 
-        display_name = identified_as if identified_as != "Unknown" else speaker_label
+        # Voice match first. If nobody is enrolled yet, fall back to an
+        # explicit self-introduction in the words ("My name is Anushka") and
+        # enroll that voice automatically so later meetings label themselves.
+        if identified_as == UNKNOWN:
+            hint = extract_self_introduction_name(asr["text"])
+            if hint:
+                identified_as = hint
+                confidence = 1.0
+                try:
+                    self.identifier.enroll(hint, stable_embedding, overwrite=False)
+                    logger.info(
+                        f"[{start:.1f}s] auto-enrolled '{hint}' from self-introduction"
+                    )
+                except Exception as exc:
+                    logger.warning(f"[{start:.1f}s] auto-enroll '{hint}' failed: {exc}")
+
+        display_name = identified_as if identified_as != UNKNOWN else speaker_label
         entry = {
             "start_sec": round(start, 2),
             "end_sec": round(end, 2),

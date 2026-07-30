@@ -99,6 +99,9 @@ class Meeting(Base):
     updated_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
+    deleted_at: Mapped[dt.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     transcript_lines: Mapped[list[TranscriptLine]] = relationship(
         back_populates="meeting",

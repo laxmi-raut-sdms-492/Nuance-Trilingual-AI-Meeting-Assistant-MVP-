@@ -20,6 +20,10 @@ Two ways in, one pipeline behind both:
     POST   /enroll                       -> register a known speaker's voice
     GET    /speakers                     -> list enrolled speaker names
     DELETE /speakers/{name}              -> remove an enrolled speaker
+    PATCH  /api/meetings/{id}/speakers/{label}?remember=true
+                                         -> rename + optionally enroll from meeting audio
+    POST   /api/meetings/{id}/speakers/{label}/enroll
+                                         -> enroll voice profile from meeting audio only
 
 Run with:  uvicorn main:app --reload --port 8000
 """

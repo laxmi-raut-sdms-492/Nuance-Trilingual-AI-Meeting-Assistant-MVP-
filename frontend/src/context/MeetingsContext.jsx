@@ -11,7 +11,7 @@ const POLL_INTERVAL_MS = 3000
 // The backend stores one UTC timestamp per meeting and deliberately does no
 // date formatting — the server's timezone is not the viewer's. These derived
 // fields are what the list and detail screens render.
-function normalize(meeting) {
+export function normalizeMeeting(meeting) {
   const uploadedAt = meeting.uploadedAtISO ? new Date(meeting.uploadedAtISO) : null
   return {
     ...meeting,
@@ -42,7 +42,7 @@ export function MeetingsProvider({ children }) {
     try {
       const { data } = await meetingsApi.list()
       if (seq !== requestSeq.current) return
-      setMeetings((data.meetings || []).map(normalize))
+      setMeetings((data.meetings || []).map(normalizeMeeting))
       setError(null)
     } catch (err) {
       if (seq !== requestSeq.current) return
@@ -77,7 +77,7 @@ export function MeetingsProvider({ children }) {
     formData.append('agenda', details.agenda?.trim() || '')
 
     const { data } = await meetingsApi.create(formData, onUploadProgress)
-    const record = normalize(data)
+    const record = normalizeMeeting(data)
     invalidateInFlight()
     setMeetings((prev) => [record, ...prev.filter((m) => m.id !== record.id)])
     return record
@@ -100,7 +100,7 @@ export function MeetingsProvider({ children }) {
   // the detail page fetches the full record separately.
   const fetchMeeting = useCallback(async (id) => {
     const { data } = await meetingsApi.getById(id)
-    return normalize(data)
+    return normalizeMeeting(data)
   }, [])
 
   const getById = useCallback((id) => meetings.find((m) => m.id === id), [meetings])

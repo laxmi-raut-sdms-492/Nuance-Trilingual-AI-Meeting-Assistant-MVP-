@@ -32,6 +32,7 @@ from config import (
     THRESHOLD_GROWTH_CAP,
     CLUSTER_MERGE_DISTANCE,
     CLUSTER_MERGE_CHECK_EVERY,
+    MIN_NEW_CLUSTER_SECONDS,
 )
 
 logger = logging.getLogger("diarizer")
@@ -44,8 +45,6 @@ class SessionDiarizer:
         self._last_assigned_label: str | None = None
         self._segments_since_merge_check = 0
 
-    MIN_NEW_CLUSTER_SECONDS = 2.5       
-
     def add_segment(self, start: float, end: float, embedding: np.ndarray) -> str:
         """Add one segment's embedding and return the speaker label it was assigned to."""
         duration = end - start
@@ -57,7 +56,7 @@ class SessionDiarizer:
         best_label, best_dist, raw_dists = self._find_best_match(embedding)
 
         threshold = self._effective_threshold(best_label)
-        too_short_for_new = duration < self.MIN_NEW_CLUSTER_SECONDS
+        too_short_for_new = duration < MIN_NEW_CLUSTER_SECONDS
         if best_dist < threshold or too_short_for_new:
             self._update_cluster(best_label, embedding)
             reason = "too short for new cluster" if too_short_for_new and best_dist >= threshold else "matched"

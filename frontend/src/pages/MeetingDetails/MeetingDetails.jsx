@@ -1,11 +1,12 @@
 import { useParams } from 'react-router-dom'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import toast from 'react-hot-toast'
 import Icon from '../../components/common/Icon.jsx'
 import EmptyState from '../../components/common/EmptyState.jsx'
 import Loader from '../../components/common/Loader.jsx'
 import AudioPlayer from '../../components/common/AudioPlayer.jsx'
 import { useMeetings } from '../../context/MeetingsContext.jsx'
-import { meetingsApi, describeError } from '../../services/api.js'
+import { meetingsApi, speakersApi, describeError } from '../../services/api.js'
 
 /**
  * Ported from the design export (meeting_details_completed),
@@ -27,6 +28,10 @@ const STATUS_PILL = {
 /** Devanagari needs its own face and looser leading than Latin at 16px. */
 const isDevanagari = (code) => code === 'hi' || code === 'mr'
 
+function isGenericSpeaker(name) {
+  return /^speaker[_\s]?\d+$/i.test(String(name || '').trim())
+}
+
 function MetaChip({ icon, children }) {
   return (
     <div className="flex items-center gap-1.5 bg-surface border border-border px-2.5 py-1 rounded-md">
@@ -37,12 +42,10 @@ function MetaChip({ icon, children }) {
 }
 
 /**
- * Click a diarized label (e.g. "SPEAKER_00") to rename it. Renaming is
- * scoped to this meeting only and is purely cosmetic -- it relabels every
- * line in the transcript and the speaker stats panel, but does not touch
- * voice profiles (see Settings > Speaker Enrollment for that).
+ * Click a diarized label (e.g. "SPEAKER_00") to set a permanent name.
+ * Saving always enrolls the voice so future meetings auto-label them.
  */
-function SpeakerLabel({ meetingId, speaker, color, onRenamed }) {
+function SpeakerLabel({ meetingId, speaker, speakerLabel, color, onRenamed, enrolledSpeakers = [] }) {
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(speaker)
   const [saving, setSaving] = useState(false)
@@ -52,17 +55,25 @@ function SpeakerLabel({ meetingId, speaker, color, onRenamed }) {
     setValue(speaker)
   }, [speaker])
 
-  const commit = async () => {
-    const trimmed = value.trim()
+  const cancel = () => {
+    setEditing(false)
+    setValue(speaker)
+    setError('')
+  }
+
+  const commit = async (nameOverride, { permanent = true } = {}) => {
+    const trimmed = (nameOverride ?? value).trim()
     if (!trimmed || trimmed === speaker) {
-      setEditing(false)
-      setValue(speaker)
+      cancel()
       return
     }
     setSaving(true)
     setError('')
     try {
-      await meetingsApi.renameSpeaker(meetingId, speaker, trimmed)
+      const key = speaker
+      // permanent=true (default): store voice profile for every future meeting.
+      await meetingsApi.renameSpeaker(meetingId, key, trimmed, { remember: permanent })
+      if (permanent) toast.success(`${trimmed} saved for all future meetings`)
       setEditing(false)
       onRenamed?.()
     } catch (err) {
@@ -73,24 +84,60 @@ function SpeakerLabel({ meetingId, speaker, color, onRenamed }) {
   }
 
   if (editing) {
+    const suggestions = enrolledSpeakers.filter(
+      (n) => n && n.toLowerCase() !== String(speaker).toLowerCase()
+    )
     return (
-      <span className="inline-flex items-center gap-1">
-        <input
-          autoFocus
-          value={value}
-          disabled={saving}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') commit()
-            if (e.key === 'Escape') {
-              setEditing(false)
-              setValue(speaker)
-            }
-          }}
-          onBlur={commit}
-          className="font-label-sm text-label-sm uppercase bg-transparent border-b border-primary outline-none w-28"
-          style={{ color }}
-        />
+      <span className="inline-flex flex-col items-start gap-1.5 max-w-[16rem]">
+        <span className="inline-flex items-center gap-1 flex-wrap">
+          <input
+            autoFocus
+            value={value}
+            disabled={saving}
+            onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commit()
+              if (e.key === 'Escape') cancel()
+            }}
+            placeholder="e.g. Anushka"
+            className="font-label-sm text-label-sm uppercase bg-transparent border-b border-primary outline-none w-28"
+            style={{ color }}
+          />
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => commit()}
+            className="font-meta-data text-meta-data text-primary hover:underline normal-case shrink-0"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={cancel}
+            className="font-meta-data text-meta-data text-text-muted hover:underline normal-case shrink-0"
+          >
+            Cancel
+          </button>
+        </span>
+        {suggestions.length > 0 && (
+          <span className="flex flex-wrap gap-1 normal-case">
+            {suggestions.map((name) => (
+              <button
+                key={name}
+                type="button"
+                disabled={saving}
+                onClick={() => commit(name, { permanent: true })}
+                className="px-2 py-0.5 rounded-md border border-border bg-surface-container-low font-meta-data text-meta-data text-text-primary hover:border-primary hover:text-primary transition-colors"
+              >
+                {name}
+              </button>
+            ))}
+          </span>
+        )}
+        <span className="font-meta-data text-meta-data text-text-muted leading-snug normal-case">
+          This name is saved permanently and used whenever this voice speaks again.
+        </span>
         {error && <span className="text-[10px] text-error normal-case">{error}</span>}
       </span>
     )
@@ -99,7 +146,7 @@ function SpeakerLabel({ meetingId, speaker, color, onRenamed }) {
   return (
     <button
       type="button"
-      title="Click to rename this speaker for this meeting"
+      title="Click to set a permanent speaker name"
       onClick={() => setEditing(true)}
       className="font-label-sm text-label-sm uppercase hover:underline decoration-dotted underline-offset-2"
       style={{ color }}
@@ -188,6 +235,8 @@ export default function MeetingDetails() {
   const [notFound, setNotFound] = useState(false)
   const [activeTab, setActiveTab] = useState('Transcript')
   const [search, setSearch] = useState('')
+  const [enrolledSpeakers, setEnrolledSpeakers] = useState([])
+  const autoLabeledRef = useRef(false)
 
   const load = useCallback(async () => {
     try {
@@ -200,10 +249,21 @@ export default function MeetingDetails() {
     }
   }, [id, fetchMeeting])
 
+  const loadEnrolled = useCallback(async () => {
+    try {
+      const { data } = await speakersApi.list()
+      setEnrolledSpeakers(data.speakers || [])
+    } catch {
+      setEnrolledSpeakers([])
+    }
+  }, [])
+
   useEffect(() => {
     setLoading(true)
+    autoLabeledRef.current = false
     load()
-  }, [load])
+    loadEnrolled()
+  }, [load, loadEnrolled])
 
   // Keep refetching while the backend is still transcribing this meeting, so
   // the transcript fills in without the user reloading. This live-filling
@@ -213,6 +273,40 @@ export default function MeetingDetails() {
     const timer = setInterval(load, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
   }, [meeting?.status, load])
+
+  // Quietly auto-label Speaker_XX from enrolled voices / greetings / fragments.
+  // Re-runs when generic labels remain (e.g. Speaker_02 after Anushka was named).
+  useEffect(() => {
+    if (!meeting || meeting.status !== 'Completed') return
+    const hasGeneric =
+      (meeting.speakerStats || []).some((s) => isGenericSpeaker(s.name)) ||
+      (meeting.transcript || []).some((t) => isGenericSpeaker(t.speaker))
+    if (!hasGeneric) {
+      autoLabeledRef.current = false
+      return
+    }
+    if (autoLabeledRef.current) return
+
+    autoLabeledRef.current = true
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data } = await meetingsApi.identifySpeakers(id)
+        if (cancelled) return
+        if (data?.meeting && (data.applied || []).length > 0) {
+          setMeeting(data.meeting)
+          loadEnrolled()
+          // Allow another pass if some Speaker_XX remain after partial apply.
+          autoLabeledRef.current = false
+        }
+      } catch {
+        // Stay silent — leave Speaker_XX if nothing could be resolved.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [meeting, id, loadEnrolled])
 
   if (loading) return <Loader label="Loading meeting..." />
 
@@ -257,11 +351,18 @@ export default function MeetingDetails() {
             <div className="flex flex-wrap items-center gap-2 mt-3 font-meta-data text-meta-data text-text-muted">
               <MetaChip icon="calendar_today">{meeting.date}</MetaChip>
               <MetaChip icon="schedule">{meeting.duration || meeting.time}</MetaChip>
-              {meeting.participants > 0 && (
-                <MetaChip icon="group">
-                  {meeting.participants} {meeting.participants === 1 ? 'Speaker' : 'Speakers'}
-                </MetaChip>
-              )}
+              {(() => {
+                const speakerCount =
+                  meeting.speakerStats?.length ||
+                  new Set((meeting.transcript || []).map((t) => t.speaker).filter(Boolean)).size ||
+                  meeting.participants ||
+                  0
+                return speakerCount > 0 ? (
+                  <MetaChip icon="group">
+                    {speakerCount} {speakerCount === 1 ? 'Speaker' : 'Speakers'}
+                  </MetaChip>
+                ) : null
+              })()}
               {meeting.languages?.length > 0 && (
                 <MetaChip icon="translate">
                   {meeting.languages.map((l) => l.code.toUpperCase()).join(', ')}
@@ -291,7 +392,11 @@ export default function MeetingDetails() {
         )}
       </div>
 
-      <AudioPlayer meetingId={meeting.id} fileName={meeting.fileName} />
+      <AudioPlayer
+        meetingId={meeting.id}
+        fileName={meeting.fileName}
+        transcript={meeting.transcript || []}
+      />
 
       {processing && (
         <div className="bg-surface border border-processing/30 rounded-xl p-5">
@@ -407,8 +512,10 @@ export default function MeetingDetails() {
                               <SpeakerLabel
                                 meetingId={id}
                                 speaker={t.speaker}
+                                speakerLabel={t.speaker_label}
                                 color={t.color}
                                 onRenamed={load}
+                                enrolledSpeakers={enrolledSpeakers}
                               />
                               {/* Language is per line, not per meeting — a
                                   trilingual meeting switches mid-conversation. */}

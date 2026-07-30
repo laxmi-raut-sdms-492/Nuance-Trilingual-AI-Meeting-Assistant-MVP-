@@ -32,22 +32,44 @@ export const meetingsApi = {
     }),
 
   remove: (id) => api.delete(`/meetings/${id}`),
+  trash: () => api.get('/meetings/trash'),
+  restore: (id) => api.post(`/meetings/${id}/restore`),
+  purge: (id) => api.delete(`/meetings/${id}/purge`),
 
   search: (query) => api.get('/search', { params: { q: query } }),
 
   languages: () => api.get('/languages'),
 
-  // Cosmetic rename of a diarized label (e.g. "Speaker_00") to a human name,
-  // scoped to one meeting. Does not touch voice profiles -- see speakersApi
-  // for enrolling a voice so future meetings auto-label it.
-  renameSpeaker: (meetingId, speakerLabel, name) => {
+  // Cosmetic rename of a diarized label (e.g. "Speaker_00") to a human name.
+  // remember defaults to true — the voice is stored permanently for future meetings.
+  renameSpeaker: (meetingId, speakerLabel, name, { remember = true, overwrite = false } = {}) => {
     const formData = new FormData()
     formData.append('name', name)
+    formData.append('remember', remember ? 'true' : 'false')
+    formData.append('overwrite', overwrite ? 'true' : 'false')
     return api.patch(
       `/meetings/${meetingId}/speakers/${encodeURIComponent(speakerLabel)}`,
-      formData
+      formData,
+      remember ? { timeout: 0 } : undefined
     )
   },
+
+  // Enroll a voice profile from meeting audio without renaming (or after a
+  // prior rename). Uses the same ECAPA + speakers table path as /enroll.
+  enrollSpeaker: (meetingId, speakerLabel, name, { overwrite = false } = {}) => {
+    const formData = new FormData()
+    formData.append('name', name)
+    formData.append('overwrite', overwrite ? 'true' : 'false')
+    return api.post(
+      `/meetings/${meetingId}/speakers/${encodeURIComponent(speakerLabel)}/enroll`,
+      formData,
+      { timeout: 0 }
+    )
+  },
+
+  // Re-match Speaker_XX labels against voices enrolled in Settings.
+  identifySpeakers: (meetingId) =>
+    api.post(`/meetings/${meetingId}/identify-speakers`, null, { timeout: 0 }),
 
   // The <audio> element fetches this itself, so it needs a plain URL rather
   // than an axios call.

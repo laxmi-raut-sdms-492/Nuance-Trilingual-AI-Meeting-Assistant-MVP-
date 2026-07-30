@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import Icon from '../../components/common/Icon.jsx'
@@ -6,7 +6,7 @@ import Loader from '../../components/common/Loader.jsx'
 import Pagination from '../../components/common/Pagination.jsx'
 import EmptyState from '../../components/common/EmptyState.jsx'
 import ConfirmDialog from '../../components/common/ConfirmDialog.jsx'
-import { useMeetings } from '../../context/MeetingsContext.jsx'
+import { useMeetings, normalizeMeeting } from '../../context/MeetingsContext.jsx'
 import { meetingsApi, describeError } from '../../services/api.js'
 
 /**
@@ -94,12 +94,19 @@ function StatusPill({ status }) {
 
 export default function MeetingList({ filter }) {
   const navigate = useNavigate()
-  const { meetings, removeMeeting, loading, error } = useMeetings()
+  const { meetings, removeMeeting, loading, error, refresh } = useMeetings()
   const [searchParams, setSearchParams] = useSearchParams()
   const [query, setQuery] = useState(searchParams.get('q') || '')
   const [page, setPage] = useState(1)
   const [pendingDelete, setPendingDelete] = useState(null)
+  const [pendingPurge, setPendingPurge] = useState(null)
   const [deleting, setDeleting] = useState(false)
+  const [purging, setPurging] = useState(false)
+  const [restoringId, setRestoringId] = useState(null)
+
+  const [trashMeetings, setTrashMeetings] = useState([])
+  const [trashLoading, setTrashLoading] = useState(false)
+  const [trashError, setTrashError] = useState(null)
 
   // null while not searching; an array (possibly empty) once the server has
   // answered. The distinction matters — an empty array is "no matches", null
@@ -116,10 +123,25 @@ export default function MeetingList({ filter }) {
     setPage(1)
   }, [searchParams])
 
-  // Trash has no soft-delete backing yet. Shown honestly as empty rather than
-  // faking rows — see README "Known limitations".
   const isTrash = filter === 'trash'
   const term = query.trim()
+
+  const loadTrash = useCallback(async () => {
+    setTrashLoading(true)
+    try {
+      const { data } = await meetingsApi.trash()
+      setTrashMeetings((data.meetings || []).map(normalizeMeeting))
+      setTrashError(null)
+    } catch (err) {
+      setTrashError(describeError(err))
+    } finally {
+      setTrashLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isTrash) loadTrash()
+  }, [isTrash, loadTrash])
 
   useEffect(() => {
     if (isTrash || !term) {
@@ -157,10 +179,13 @@ export default function MeetingList({ filter }) {
   const matchById = results ? new Map(results.map((r) => [r.id, r])) : null
 
   const filtered = isTrash
-    ? []
+    ? trashMeetings
     : results
       ? results.map((r) => byId.get(r.id) || { ...r, date: '—', time: '—', fileSizeLabel: '—' })
       : meetings
+
+  const listLoading = isTrash ? trashLoading : loading
+  const listError = isTrash ? trashError : error
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
@@ -169,12 +194,40 @@ export default function MeetingList({ filter }) {
     setDeleting(true)
     try {
       await removeMeeting(pendingDelete.id)
-      toast.success('Meeting deleted.')
+      toast.success('Meeting moved to Trash.')
       setPendingDelete(null)
     } catch (err) {
       toast.error(err.message)
     } finally {
       setDeleting(false)
+    }
+  }
+
+  const confirmPurge = async () => {
+    setPurging(true)
+    try {
+      await meetingsApi.purge(pendingPurge.id)
+      setTrashMeetings((prev) => prev.filter((m) => m.id !== pendingPurge.id))
+      toast.success('Meeting permanently deleted.')
+      setPendingPurge(null)
+    } catch (err) {
+      toast.error(describeError(err))
+    } finally {
+      setPurging(false)
+    }
+  }
+
+  const handleRestore = async (meeting) => {
+    setRestoringId(meeting.id)
+    try {
+      await meetingsApi.restore(meeting.id)
+      setTrashMeetings((prev) => prev.filter((m) => m.id !== meeting.id))
+      await refresh({ quiet: true })
+      toast.success('Meeting restored.')
+    } catch (err) {
+      toast.error(describeError(err))
+    } finally {
+      setRestoringId(null)
     }
   }
 
@@ -240,15 +293,15 @@ export default function MeetingList({ filter }) {
           </div>
         )}
 
-        {error && (
+        {listError && (
           <div className="m-4 rounded-lg border border-error/20 bg-error/10 px-4 py-3">
             <p className="font-label-sm text-label-sm text-error">Could not load meetings</p>
-            <p className="font-meta-data text-meta-data text-text-muted mt-1">{error}</p>
+            <p className="font-meta-data text-meta-data text-text-muted mt-1">{listError}</p>
           </div>
         )}
 
-        {loading || (searching && !results) ? (
-          <Loader label={searching ? 'Searching transcripts...' : 'Loading meetings...'} />
+        {listLoading || (searching && !results) ? (
+          <Loader label={searching ? 'Searching transcripts...' : isTrash ? 'Loading trash...' : 'Loading meetings...'} />
         ) : filtered.length === 0 ? (
           <EmptyState
             icon={isTrash ? 'delete' : results ? 'search_off' : 'event_note'}
@@ -261,7 +314,7 @@ export default function MeetingList({ filter }) {
             }
             subtitle={
               isTrash
-                ? 'Deleting a meeting removes it and its recording immediately — there is no soft delete yet, so nothing collects here.'
+                ? 'Deleted meetings appear here. You can restore them or delete them permanently.'
                 : results
                   ? 'Titles, agendas and every transcribed line were searched, in all three languages.'
                   : 'Upload an audio or video recording to get started.'
@@ -291,12 +344,19 @@ export default function MeetingList({ filter }) {
                   {paged.map((m) => (
                     <tr key={m.id} className="hover:bg-surface-raised transition-colors group">
                       <td className="p-4 align-top">
-                        <Link to={`/meetings/${m.id}`} className="flex items-center gap-3">
-                          <Icon name="graphic_eq" className="text-text-muted" />
-                          <span className="text-text-primary font-medium hover:text-primary transition-colors">
-                            {m.title}
-                          </span>
-                        </Link>
+                        {isTrash ? (
+                          <div className="flex items-center gap-3">
+                            <Icon name="graphic_eq" className="text-text-muted" />
+                            <span className="text-text-primary font-medium">{m.title}</span>
+                          </div>
+                        ) : (
+                          <Link to={`/meetings/${m.id}`} className="flex items-center gap-3">
+                            <Icon name="graphic_eq" className="text-text-muted" />
+                            <span className="text-text-primary font-medium hover:text-primary transition-colors">
+                              {m.title}
+                            </span>
+                          </Link>
+                        )}
                         <MatchSnippets result={matchById?.get(m.id)} needle={term} />
                       </td>
                       <td className="p-4 align-top text-text-faint whitespace-nowrap">
@@ -307,23 +367,47 @@ export default function MeetingList({ filter }) {
                         <StatusPill status={m.status} />
                       </td>
                       <td className="p-4 align-top text-right">
-                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                          <button
-                            type="button"
-                            onClick={() => navigate(`/meetings/${m.id}`)}
-                            aria-label={`View ${m.title}`}
-                            className="text-text-muted hover:text-primary transition-colors p-1"
-                          >
-                            <Icon name="visibility" className="text-[18px]" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setPendingDelete(m)}
-                            aria-label={`Delete ${m.title}`}
-                            className="text-text-muted hover:text-error transition-colors p-1"
-                          >
-                            <Icon name="delete" className="text-[18px]" />
-                          </button>
+                        <div className="flex justify-end gap-2">
+                          {isTrash ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleRestore(m)}
+                                disabled={restoringId === m.id}
+                                aria-label={`Restore ${m.title}`}
+                                className="text-text-muted hover:text-success transition-colors p-1 disabled:opacity-40"
+                              >
+                                <Icon name="restore" className="text-[18px]" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingPurge(m)}
+                                aria-label={`Delete ${m.title} permanently`}
+                                className="text-text-muted hover:text-error transition-colors p-1"
+                              >
+                                <Icon name="delete_forever" className="text-[18px]" />
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/meetings/${m.id}`)}
+                                aria-label={`View ${m.title}`}
+                                className="text-text-muted hover:text-primary transition-colors p-1"
+                              >
+                                <Icon name="visibility" className="text-[18px]" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDelete(m)}
+                                aria-label={`Delete ${m.title}`}
+                                className="text-text-muted hover:text-error transition-colors p-1"
+                              >
+                                <Icon name="delete" className="text-[18px]" />
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -337,10 +421,17 @@ export default function MeetingList({ filter }) {
               {paged.map((m) => (
                 <div key={m.id} className="p-4 flex flex-col gap-3">
                   <div className="flex items-start justify-between gap-3">
-                    <Link to={`/meetings/${m.id}`} className="flex items-center gap-3 min-w-0">
-                      <Icon name="graphic_eq" className="text-text-muted shrink-0" />
-                      <span className="text-text-primary font-medium truncate">{m.title}</span>
-                    </Link>
+                    {isTrash ? (
+                      <div className="flex items-center gap-3 min-w-0">
+                        <Icon name="graphic_eq" className="text-text-muted shrink-0" />
+                        <span className="text-text-primary font-medium truncate">{m.title}</span>
+                      </div>
+                    ) : (
+                      <Link to={`/meetings/${m.id}`} className="flex items-center gap-3 min-w-0">
+                        <Icon name="graphic_eq" className="text-text-muted shrink-0" />
+                        <span className="text-text-primary font-medium truncate">{m.title}</span>
+                      </Link>
+                    )}
                     <StatusPill status={m.status} />
                   </div>
                   <MatchSnippets result={matchById?.get(m.id)} needle={term} />
@@ -349,22 +440,46 @@ export default function MeetingList({ filter }) {
                       {m.date} · {m.fileSizeLabel}
                     </p>
                     <div className="flex gap-1 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/meetings/${m.id}`)}
-                        aria-label={`View ${m.title}`}
-                        className="text-text-muted hover:text-primary transition-colors p-2"
-                      >
-                        <Icon name="visibility" className="text-[18px]" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPendingDelete(m)}
-                        aria-label={`Delete ${m.title}`}
-                        className="text-text-muted hover:text-error transition-colors p-2"
-                      >
-                        <Icon name="delete" className="text-[18px]" />
-                      </button>
+                      {isTrash ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleRestore(m)}
+                            disabled={restoringId === m.id}
+                            aria-label={`Restore ${m.title}`}
+                            className="text-text-muted hover:text-success transition-colors p-2 disabled:opacity-40"
+                          >
+                            <Icon name="restore" className="text-[18px]" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPendingPurge(m)}
+                            aria-label={`Delete ${m.title} permanently`}
+                            className="text-text-muted hover:text-error transition-colors p-2"
+                          >
+                            <Icon name="delete_forever" className="text-[18px]" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/meetings/${m.id}`)}
+                            aria-label={`View ${m.title}`}
+                            className="text-text-muted hover:text-primary transition-colors p-2"
+                          >
+                            <Icon name="visibility" className="text-[18px]" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPendingDelete(m)}
+                            aria-label={`Delete ${m.title}`}
+                            className="text-text-muted hover:text-error transition-colors p-2"
+                          >
+                            <Icon name="delete" className="text-[18px]" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -385,10 +500,21 @@ export default function MeetingList({ filter }) {
       <ConfirmDialog
         open={Boolean(pendingDelete)}
         busy={deleting}
-        title="Delete Meeting"
-        message={`Delete "${pendingDelete?.title}"? This cannot be undone — the recording and its transcript are removed from the server.`}
+        title="Move to Trash"
+        message={`Move "${pendingDelete?.title}" to Trash? You can restore it later from the Trash page.`}
+        confirmLabel="Move to Trash"
         onConfirm={confirmDelete}
         onCancel={() => setPendingDelete(null)}
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingPurge)}
+        busy={purging}
+        title="Delete Permanently"
+        message={`Permanently delete "${pendingPurge?.title}"? The recording and transcript will be removed from the server. This cannot be undone.`}
+        confirmLabel="Delete permanently"
+        onConfirm={confirmPurge}
+        onCancel={() => setPendingPurge(null)}
       />
     </>
   )

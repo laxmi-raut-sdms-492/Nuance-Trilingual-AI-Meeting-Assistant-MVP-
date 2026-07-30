@@ -1,9 +1,13 @@
 <!doctype html>
-<html lang="en">
+<!-- class="dark" is set here, before React mounts, so the first paint is
+     already dark. ThemeContext takes over on mount and may switch to light;
+     without this every load flashes white first. -->
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MeetIQ - AI Meeting Intelligence</title>
+    <link rel="icon" type="image/png" href="/brand/stark-mark.png" />
+    <title>Nuance — Trilingual AI Meeting Assistant</title>
   </head>
   <body>
     <div id="root"></div>

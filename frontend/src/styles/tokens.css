@@ -1,0 +1,160 @@
+/* Design tokens. Edit by hand — this is committed source.
+ *
+ * These values were originally generated from the design export, which is not
+ * part of this repository. There is no generator here to re-run: treat this
+ * file as the authoritative definition of the palette.
+ *
+ * Channels are space-separated RGB so Tailwind's alpha syntax keeps working —
+ * classes like bg-primary-container/90 and bg-primary/40 need
+ * rgb(var(--x) / <alpha-value>) rather than a plain hex var.
+ *
+ * :root is the light theme, .dark is the dark theme. Dark is the design's
+ * native and only authored mode; light was derived from it, so if something
+ * looks wrong in light mode, suspect these values before the components.
+ *
+ * Accessibility: --color-cta (#FC5100) must keep its near-black --color-on-cta
+ * (#09090b) label. White on that orange is 3.32:1 and fails WCAG AA; near
+ * black is 6.32:1.
+ */
+
+:root {
+  --color-accent: 252 81 0;
+  --color-background: 250 249 250;
+  --color-border: 228 228 231;
+  --color-cta: 252 81 0;
+  --color-cta-hover: 255 106 36;
+  --color-error: 186 26 26;
+  --color-error-container: 255 218 214;
+  --color-inverse-on-surface: 244 240 241;
+  --color-inverse-primary: 255 181 157;
+  --color-inverse-surface: 49 48 50;
+  --color-on-background: 28 27 29;
+  --color-on-cta: 9 9 11;
+  --color-on-error: 255 255 255;
+  --color-on-error-container: 65 0 2;
+  --color-on-primary: 255 255 255;
+  --color-on-primary-container: 81 20 0;
+  --color-on-primary-fixed: 57 12 0;
+  --color-on-primary-fixed-variant: 131 38 0;
+  --color-on-secondary: 255 255 255;
+  --color-on-secondary-container: 53 16 0;
+  --color-on-secondary-fixed: 53 16 0;
+  --color-on-secondary-fixed-variant: 120 49 7;
+  --color-on-surface: 28 27 29;
+  --color-on-surface-variant: 83 67 62;
+  --color-on-tertiary: 255 255 255;
+  --color-on-tertiary-container: 0 28 58;
+  --color-on-tertiary-fixed: 0 28 58;
+  --color-on-tertiary-fixed-variant: 0 71 133;
+  --color-outline: 133 115 110;
+  --color-outline-variant: 216 194 187;
+  --color-primary: 172 53 0;
+  --color-primary-container: 255 87 17;
+  --color-primary-fixed: 255 219 208;
+  --color-primary-fixed-dim: 255 181 157;
+  --color-processing: 217 119 6;
+  --color-secondary: 120 49 7;
+  --color-secondary-container: 255 219 204;
+  --color-secondary-fixed: 255 219 204;
+  --color-secondary-fixed-dim: 255 182 148;
+  --color-speaker-1: 59 130 246;
+  --color-speaker-10: 45 212 191;
+  --color-speaker-2: 168 85 247;
+  --color-speaker-3: 16 185 129;
+  --color-speaker-4: 236 72 153;
+  --color-speaker-5: 6 182 212;
+  --color-speaker-6: 139 92 246;
+  --color-speaker-7: 20 184 166;
+  --color-speaker-8: 244 114 182;
+  --color-speaker-9: 99 102 241;
+  --color-success: 22 163 74;
+  --color-surface: 255 255 255;
+  --color-surface-bright: 255 255 255;
+  --color-surface-container: 241 239 240;
+  --color-surface-container-high: 235 233 234;
+  --color-surface-container-highest: 229 227 228;
+  --color-surface-container-low: 247 245 246;
+  --color-surface-container-lowest: 255 255 255;
+  --color-surface-dim: 240 238 239;
+  --color-surface-raised: 255 255 255;
+  --color-surface-tint: 172 53 0;
+  --color-surface-variant: 229 227 228;
+  --color-tertiary: 0 71 133;
+  --color-tertiary-container: 212 227 255;
+  --color-tertiary-fixed: 212 227 255;
+  --color-tertiary-fixed-dim: 165 200 255;
+  --color-text-faint: 161 161 170;
+  --color-text-muted: 82 82 91;
+  --color-text-primary: 24 24 27;
+}
+
+.dark {
+  --color-accent: 252 81 0;
+  --color-background: 19 19 21;
+  --color-border: 39 39 42;
+  --color-cta: 252 81 0;
+  --color-cta-hover: 255 106 36;
+  --color-error: 239 68 68;
+  --color-error-container: 147 0 10;
+  --color-inverse-on-surface: 49 48 50;
+  --color-inverse-primary: 172 53 0;
+  --color-inverse-surface: 229 225 228;
+  --color-on-background: 229 225 228;
+  --color-on-cta: 9 9 11;
+  --color-on-error: 105 0 5;
+  --color-on-error-container: 255 218 214;
+  --color-on-primary: 93 24 0;
+  --color-on-primary-container: 81 20 0;
+  --color-on-primary-fixed: 57 12 0;
+  --color-on-primary-fixed-variant: 131 38 0;
+  --color-on-secondary: 87 31 0;
+  --color-on-secondary-container: 255 161 116;
+  --color-on-secondary-fixed: 53 16 0;
+  --color-on-secondary-fixed-variant: 120 49 7;
+  --color-on-surface: 229 225 228;
+  --color-on-surface-variant: 229 190 178;
+  --color-on-tertiary: 0 49 94;
+  --color-on-tertiary-container: 0 42 83;
+  --color-on-tertiary-fixed: 0 28 58;
+  --color-on-tertiary-fixed-variant: 0 71 133;
+  --color-outline: 172 137 126;
+  --color-outline-variant: 92 64 55;
+  --color-primary: 255 181 157;
+  --color-primary-container: 255 87 17;
+  --color-primary-fixed: 255 219 208;
+  --color-primary-fixed-dim: 255 181 157;
+  --color-processing: 245 158 11;
+  --color-secondary: 255 182 148;
+  --color-secondary-container: 123 51 9;
+  --color-secondary-fixed: 255 219 204;
+  --color-secondary-fixed-dim: 255 182 148;
+  --color-speaker-1: 59 130 246;
+  --color-speaker-10: 45 212 191;
+  --color-speaker-2: 168 85 247;
+  --color-speaker-3: 16 185 129;
+  --color-speaker-4: 236 72 153;
+  --color-speaker-5: 6 182 212;
+  --color-speaker-6: 139 92 246;
+  --color-speaker-7: 20 184 166;
+  --color-speaker-8: 244 114 182;
+  --color-speaker-9: 99 102 241;
+  --color-success: 34 197 94;
+  --color-surface: 24 24 27;
+  --color-surface-bright: 57 57 59;
+  --color-surface-container: 32 31 34;
+  --color-surface-container-high: 42 42 44;
+  --color-surface-container-highest: 53 52 55;
+  --color-surface-container-low: 28 27 29;
+  --color-surface-container-lowest: 14 14 16;
+  --color-surface-dim: 19 19 21;
+  --color-surface-raised: 33 33 36;
+  --color-surface-tint: 255 181 157;
+  --color-surface-variant: 53 52 55;
+  --color-tertiary: 165 200 255;
+  --color-tertiary-container: 36 146 255;
+  --color-tertiary-fixed: 212 227 255;
+  --color-tertiary-fixed-dim: 165 200 255;
+  --color-text-faint: 82 82 91;
+  --color-text-muted: 161 161 170;
+  --color-text-primary: 250 250 250;
+}

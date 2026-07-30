@@ -4,8 +4,25 @@ python-multipart==0.0.9
 websockets==13.1
 torch==2.4.1
 torchaudio==2.4.1
-speechbrain==1.0.2
+
+# 1.0.2 calls hf_hub_download(use_auth_token=...), an argument huggingface_hub
+# removed in 1.0. With a current hub installed, every embedding call raises
+# and the pipeline silently produces empty transcripts. 1.1.0 uses `token=`.
+speechbrain==1.1.0
+
 git+https://github.com/openai/whisper.git
 scikit-learn==1.5.2
 scipy==1.14.1
 numpy==1.26.4
+
+# --- Database ---
+# psycopg 3 (not psycopg2). [binary] ships prebuilt wheels so no libpq-dev or
+# compiler is needed to install.
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg[binary]==3.2.3
+
+# --- Tests ---
+# `pytest` in backend/ runs the repository suite against SQLite — no Postgres
+# server needed. See tests/conftest.py for what that does and does not cover.
+pytest==8.3.3

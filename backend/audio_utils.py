@@ -31,6 +31,21 @@ def rms(audio: np.ndarray) -> float:
     return float(np.sqrt(np.mean(np.square(audio))))
 
 
+def load_audio_file(path: str) -> np.ndarray:
+    """
+    Decode any uploaded recording to 1-D float32, 16kHz mono.
+
+    Uses Whisper's ffmpeg-backed loader rather than torchaudio because the
+    frontend can hand us containers torchaudio won't open — browser
+    MediaRecorder produces .webm/Opus, and meeting exports are often .mp4 or
+    .m4a. ffmpeg handles all of them identically, and it is already a hard
+    dependency of Whisper, so this adds nothing new to install.
+    """
+    import whisper
+
+    return whisper.load_audio(path, sr=SAMPLE_RATE)
+
+
 def wav_bytes_to_float32(wav_path: str) -> np.ndarray:
     """Load a WAV file (e.g. an enrollment sample) and resample to SAMPLE_RATE mono."""
     import torchaudio

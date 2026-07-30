@@ -1,99 +1,113 @@
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { deleteAudioBlob } from '../utils/audioStore.js'
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { meetingsApi, describeError } from '../services/api.js'
 
 const MeetingsContext = createContext(null)
-const STORAGE_KEY = 'meetiq:meetings'
 
-function loadFromStorage() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
+// While anything is still transcribing, re-fetch the list on this interval so
+// status and progress move without the user reloading. Polling stops the
+// moment nothing is in "Processing".
+const POLL_INTERVAL_MS = 3000
+
+// The backend stores one UTC timestamp per meeting and deliberately does no
+// date formatting — the server's timezone is not the viewer's. These derived
+// fields are what the list and detail screens render.
+function normalize(meeting) {
+  const uploadedAt = meeting.uploadedAtISO ? new Date(meeting.uploadedAtISO) : null
+  return {
+    ...meeting,
+    date: uploadedAt
+      ? uploadedAt.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+      : '—',
+    time: uploadedAt
+      ? uploadedAt.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+      : '—'
   }
-}
-
-function saveToStorage(meetings) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(meetings))
-  } catch {
-    // storage full or unavailable - fail silently, state still works in-memory
-  }
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return '0 MB'
-  const mb = bytes / (1024 * 1024)
-  if (mb > 1024) return `${(mb / 1024).toFixed(2)} GB`
-  return `${mb.toFixed(2)} MB`
-}
-
-function niceTitleFromFileName(name) {
-  const withoutExt = name.replace(/\.[^/.]+$/, '')
-  return withoutExt
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase()) || 'Untitled Meeting'
 }
 
 export function MeetingsProvider({ children }) {
-  const [meetings, setMeetings] = useState(() => loadFromStorage())
+  const [meetings, setMeetings] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
-  useEffect(() => {
-    saveToStorage(meetings)
-  }, [meetings])
+  // Guards against a slow in-flight refresh overwriting newer state. Any
+  // local mutation bumps this, so a poll that was already on the wire when
+  // the user deleted or uploaded something is discarded instead of
+  // resurrecting the old list.
+  const requestSeq = useRef(0)
+  const invalidateInFlight = useCallback(() => ++requestSeq.current, [])
 
-  // Adds a real uploaded file as a meeting record. No fake transcript/summary
-  // is generated - those fields stay empty until the FSD backend (Replicate +
-  // OpenRouter pipeline) is connected and returns real results.
-  const addMeeting = useCallback((file, details = {}) => {
-    const id = `MTG-${Date.now()}`
-    const now = new Date()
-    const record = {
-      id,
-      title: details.title?.trim() || niceTitleFromFileName(file.name),
-      agenda: details.agenda?.trim() || null,
-      fileName: file.name,
-      fileType: file.type || 'unknown',
-      fileSizeLabel: formatBytes(file.size),
-      fileSizeBytes: file.size,
-      date: now.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }),
-      time: now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
-      uploadedAtISO: now.toISOString(),
-      status: 'Processing',
-      duration: null,
-      participants: null,
-      language: null,
-      organizer: null,
-      location: null,
-      summary: null,
-      decisions: [],
-      actionItems: [],
-      speakerStats: [],
-      keywords: [],
-      transcript: []
+  const refresh = useCallback(async ({ quiet = false } = {}) => {
+    const seq = ++requestSeq.current
+    if (!quiet) setLoading(true)
+    try {
+      const { data } = await meetingsApi.list()
+      if (seq !== requestSeq.current) return
+      setMeetings((data.meetings || []).map(normalize))
+      setError(null)
+    } catch (err) {
+      if (seq !== requestSeq.current) return
+      setError(describeError(err))
+    } finally {
+      if (seq === requestSeq.current && !quiet) setLoading(false)
     }
-    setMeetings((prev) => [record, ...prev])
-    return record
   }, [])
 
-  const removeMeeting = useCallback((id) => {
-    setMeetings((prev) => prev.filter((m) => m.id !== id))
-    deleteAudioBlob(id)
+  useEffect(() => {
+    refresh()
+  }, [refresh])
+
+  const hasProcessing = useMemo(
+    () => meetings.some((m) => m.status === 'Processing'),
+    [meetings]
+  )
+
+  useEffect(() => {
+    if (!hasProcessing) return
+    const id = setInterval(() => refresh({ quiet: true }), POLL_INTERVAL_MS)
+    return () => clearInterval(id)
+  }, [hasProcessing, refresh])
+
+  // Uploads the real file to the backend, which transcribes it in the
+  // background. Resolves as soon as the record exists (status "Processing") —
+  // the poll above then carries it to "Completed".
+  const addMeeting = useCallback(async (file, details = {}, onUploadProgress) => {
+    const formData = new FormData()
+    formData.append('file', file, file.name)
+    formData.append('title', details.title?.trim() || '')
+    formData.append('agenda', details.agenda?.trim() || '')
+
+    const { data } = await meetingsApi.create(formData, onUploadProgress)
+    const record = normalize(data)
+    invalidateInFlight()
+    setMeetings((prev) => [record, ...prev.filter((m) => m.id !== record.id)])
+    return record
+  }, [invalidateInFlight])
+
+  const removeMeeting = useCallback(async (id) => {
+    invalidateInFlight()
+    setMeetings((prev) => prev.filter((m) => m.id !== id)) // optimistic
+    try {
+      await meetingsApi.remove(id)
+    } catch (err) {
+      // The delete didn't happen. Resync from the server rather than trying
+      // to restore a snapshot that may already be stale.
+      refresh({ quiet: true })
+      throw new Error(describeError(err))
+    }
+  }, [invalidateInFlight, refresh])
+
+  // List responses omit transcript bodies (see the backend's _summarize), so
+  // the detail page fetches the full record separately.
+  const fetchMeeting = useCallback(async (id) => {
+    const { data } = await meetingsApi.getById(id)
+    return normalize(data)
   }, [])
 
   const getById = useCallback((id) => meetings.find((m) => m.id === id), [meetings])
 
-  const markCompleted = useCallback((id, updates = {}) => {
-    setMeetings((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, status: 'Completed', ...updates } : m))
-    )
-  }, [])
-
   return (
     <MeetingsContext.Provider
-      value={{ meetings, addMeeting, removeMeeting, getById, markCompleted }}
+      value={{ meetings, loading, error, refresh, addMeeting, removeMeeting, getById, fetchMeeting }}
     >
       {children}
     </MeetingsContext.Provider>

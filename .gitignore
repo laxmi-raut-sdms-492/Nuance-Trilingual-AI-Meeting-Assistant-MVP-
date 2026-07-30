@@ -1,7 +1,102 @@
+# ---------------------------------------------------------------------------
+# Python / backend
+# ---------------------------------------------------------------------------
 venv/
+.venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Model weights, downloaded on first run and cached.
 pretrained_models/
-backend/storage/speakers.json
-.DS_Store
+
+# ---------------------------------------------------------------------------
+# Node / frontend
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ---------------------------------------------------------------------------
+# Runtime data — never commit
+# ---------------------------------------------------------------------------
+# Enrolled voiceprints are biometric data. Meeting records and uploaded
+# recordings are user content. Neither belongs in version control.
+backend/storage/*
+!backend/storage/.gitkeep
+
+# Master copies of evaluation recordings. Deliberately OUTSIDE
+# backend/storage/, which the UI's delete button empties — the sample WAV behind
+# the documented ASR baseline was lost exactly that way. Large media, still not
+# committed.
+test_audios/
+
+logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# Design source material — nothing originating from Google Stitch is committed
+# ---------------------------------------------------------------------------
+# The zip, the extracted HTML/PNG export, the merged token JSON and the
+# generator script all stay local.
+#
+# Consequence: frontend/src/styles/tokens.css is the *output* of
+# design/tokens/gen_tokens.py, so with the generator excluded that CSS is
+# ordinary committed source and must be edited by hand. It is deliberately
+# NOT ignored — without it the frontend has no colours and will not build.
+design/
+*.zip
+
+# ---------------------------------------------------------------------------
+# Working documents
+# ---------------------------------------------------------------------------
+# Scratch and superseded planning docs — kept on disk, out of the repo.
+#
+# Deliberately NOT ignored:
+#   README.md   how to run and tune the system
+#   CLAUDE.md   project memory. Encodes measured ASR results and design
+#               provenance that cost real time to establish; ignoring it means
+#               a fresh clone loses all of it.
+STITCH_PROMPT.md
+DESIGN.md
+IMPLEMENTATION_BRIEF.md
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Scratch
+# ---------------------------------------------------------------------------
+*.tmp
+*.bak
+*.orig
+scratch/
+tmp/
+CLAUDE.md
+DESIGN.md
+HANDOFF.md

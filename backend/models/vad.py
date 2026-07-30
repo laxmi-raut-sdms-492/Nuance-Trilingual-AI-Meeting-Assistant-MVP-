@@ -96,6 +96,23 @@ class SpeechSegmenter:
 
         return completed
 
+    def flush(self) -> list[dict]:
+        """
+        End of stream: emit whatever speech is still buffered.
+
+        A live meeting always ends mid-something — the last speaker stops and
+        the socket closes before Silero ever fires its "end" event, because
+        that event needs MIN_SILENCE_MS of trailing silence that never
+        arrives. Same for the final segment of an uploaded file. Without
+        this, the last thing said in every meeting is silently dropped.
+        """
+        completed = []
+        if self._in_speech and self._segment_audio:
+            completed.append(self._flush_segment())
+        self._frame_buffer = np.array([], dtype=np.float32)
+        self.iterator.reset_states()
+        return completed
+
     def _flush_segment(self) -> dict:
         audio = (
             np.concatenate(self._segment_audio)

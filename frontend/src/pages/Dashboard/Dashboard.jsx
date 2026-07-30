@@ -1,18 +1,6 @@
 import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import {
-  ListChecks,
-  CheckCircle2,
-  Loader2,
-  Users,
-  Upload,
-  ArrowUpRight,
-  Clock,
-  Tag
-} from 'lucide-react'
-import Card from '../../components/common/Card.jsx'
-import Badge from '../../components/common/Badge.jsx'
-import Button from '../../components/common/Button.jsx'
+import { useNavigate, Link } from 'react-router-dom'
+import Icon from '../../components/common/Icon.jsx'
 import EmptyState from '../../components/common/EmptyState.jsx'
 import StatCard from '../../components/cards/StatCard.jsx'
 import WeeklyChart from '../../components/charts/WeeklyChart.jsx'
@@ -21,7 +9,56 @@ import { useMeetings } from '../../context/MeetingsContext.jsx'
 import { useMembers } from '../../context/MembersContext.jsx'
 import { useUser } from '../../context/UserContext.jsx'
 
-const statusColor = { Completed: 'green', Processing: 'yellow', Failed: 'red' }
+/**
+ * Ported from the design export (dashboard_populated) and
+ * dashboard_zero_data/ — the same component covers both, because every panel
+ * here renders a designed empty state rather than hiding.
+ *
+ * Everything is derived live from real meeting state. Nothing is mocked.
+ */
+
+const STATUS_STYLE = {
+  Completed: { pill: 'bg-success/10 border-success/20 text-success', icon: 'check_circle', well: 'text-success', glyph: 'play_arrow' },
+  Processing: { pill: 'bg-processing/10 border-processing/20 text-processing', icon: 'sync', well: 'text-processing', glyph: 'sync' },
+  Failed: { pill: 'bg-error/10 border-error/20 text-error', icon: 'error', well: 'text-error', glyph: 'error' },
+}
+
+function MeetingRow({ meeting }) {
+  const style = STATUS_STYLE[meeting.status] || STATUS_STYLE.Completed
+  const processing = meeting.status === 'Processing'
+
+  return (
+    <Link
+      to={`/meetings/${meeting.id}`}
+      className={`flex items-center justify-between p-3 rounded-lg hover:bg-surface-raised cursor-pointer transition-colors border border-transparent hover:border-border group ${
+        processing ? 'bg-surface-raised/50' : ''
+      }`}
+    >
+      <div className="flex items-center gap-4 min-w-0">
+        <div
+          className={`w-10 h-10 rounded bg-surface-raised border border-border flex items-center justify-center shrink-0 ${style.well}`}
+        >
+          <Icon name={style.glyph} className={processing ? 'animate-spin text-[20px]' : ''} />
+        </div>
+        <div className="min-w-0">
+          <p className="font-sidebar-header text-[15px] text-text-primary group-hover:text-primary transition-colors truncate">
+            {meeting.title}
+          </p>
+          <p className="font-meta-data text-meta-data text-text-muted truncate">
+            {meeting.date} · {meeting.time}
+            {meeting.duration ? ` • ${meeting.duration}` : ''}
+          </p>
+        </div>
+      </div>
+      <div
+        className={`px-2 py-1 rounded border font-label-sm text-[10px] uppercase tracking-wider flex items-center gap-1 shrink-0 ${style.pill}`}
+      >
+        <Icon name={style.icon} className={`text-[14px] ${processing ? 'animate-pulse' : ''}`} />
+        {meeting.status}
+      </div>
+    </Link>
+  )
+}
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -29,14 +66,14 @@ export default function Dashboard() {
   const { members } = useMembers()
   const { profile } = useUser()
 
-  // Everything below is derived live from real app state - nothing here is
-  // hardcoded or mocked, so it stays accurate as meetings are added/removed.
-  const stats = useMemo(() => {
-    const total = meetings.length
-    const completed = meetings.filter((m) => m.status === 'Completed').length
-    const processing = meetings.filter((m) => m.status === 'Processing').length
-    return { total, completed, processing }
-  }, [meetings])
+  const stats = useMemo(
+    () => ({
+      total: meetings.length,
+      completed: meetings.filter((m) => m.status === 'Completed').length,
+      processing: meetings.filter((m) => m.status === 'Processing').length,
+    }),
+    [meetings]
+  )
 
   const weeklyData = useMemo(() => {
     const days = []
@@ -47,7 +84,7 @@ export default function Dashboard() {
       days.push({
         key: d.toDateString(),
         day: d.toLocaleDateString(undefined, { weekday: 'short' }),
-        meetings: 0
+        meetings: 0,
       })
     }
     meetings.forEach((m) => {
@@ -56,24 +93,33 @@ export default function Dashboard() {
       const bucket = days.find((d) => d.key === key)
       if (bucket) bucket.meetings += 1
     })
-    return days.map(({ day, meetings }) => ({ day, meetings }))
+    return days.map(({ day, meetings: count }) => ({ day, meetings: count }))
   }, [meetings])
 
+  // Aggregated over seconds, not percentages. Summing each meeting's
+  // percentages would weight a two-minute standup the same as a two-hour
+  // review, and a speaker present in three meetings could total 300%.
   const speakerPieData = useMemo(() => {
     const totals = {}
     meetings.forEach((m) => {
-      (m.speakerStats || []).forEach((s) => {
+      ;(m.speakerStats || []).forEach((s) => {
         if (!totals[s.name]) totals[s.name] = { name: s.name, value: 0, color: s.color }
-        totals[s.name].value += s.pct || 0
+        totals[s.name].value += s.seconds || 0
       })
     })
     return Object.values(totals)
+      .filter((s) => s.value > 0)
+      .sort((a, b) => b.value - a.value)
   }, [meetings])
 
+  // Counts are summed across meetings, not recomputed here. The backend counts
+  // each word's real occurrences in the transcript, so a tag's number is a fact;
+  // inventing or rescaling it client-side would break that. Empty until at
+  // least one meeting has been summarized.
   const topKeywords = useMemo(() => {
     const totals = {}
     meetings.forEach((m) => {
-      (m.keywords || []).forEach((k) => {
+      ;(m.keywords || []).forEach((k) => {
         totals[k.word] = (totals[k.word] || 0) + (k.count || 0)
       })
     })
@@ -92,123 +138,134 @@ export default function Dashboard() {
   )
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-4">
+    <>
+      {/* Page header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            {profile.name ? `Welcome back, ${profile.name.split(' ')[0]}` : 'Dashboard'}
-          </h1>
-          <p className="text-sm text-gray-400 mt-1">
+          <p className="font-meta-data text-meta-data text-text-muted mb-1">
             {new Date().toLocaleDateString(undefined, {
               weekday: 'long',
               year: 'numeric',
-              month: 'long',
-              day: 'numeric'
+              month: 'short',
+              day: 'numeric',
             })}
           </p>
+          <h2 className="font-headline-lg-mobile md:font-headline-lg text-headline-lg-mobile md:text-headline-lg text-text-primary">
+            {profile.name ? `Welcome back, ${profile.name.split(' ')[0]}` : 'Dashboard'}
+          </h2>
         </div>
-        <Button icon={Upload} onClick={() => navigate('/upload')}>
+        <button
+          type="button"
+          onClick={() => navigate('/upload')}
+          className="bg-cta hover:bg-primary-container text-on-cta font-label-sm text-label-sm py-3 px-6 rounded-lg flex items-center gap-2 transition-all hover:scale-105 shadow-[0_0_15px_rgba(252,81,0,0.3)]"
+        >
+          <Icon name="videocam" />
           Create Meeting
-        </Button>
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <StatCard label="Total Meetings" value={stats.total} icon={ListChecks} tint="primary" />
-        <StatCard label="Completed" value={stats.completed} icon={CheckCircle2} tint="green" />
-        <StatCard label="Processing" value={stats.processing} icon={Loader2} tint="amber" />
-        <StatCard label="Team Members" value={members.length} icon={Users} tint="sky" />
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <StatCard label="Total Meetings" value={stats.total} icon="folder" tint="primary" />
+        <StatCard label="Completed" value={stats.completed} icon="check_circle" tint="green" />
+        <StatCard label="Processing" value={stats.processing} icon="sync" tint="amber" />
+        <StatCard label="Team Members" value={members.length} icon="groups" tint="primary" />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <Card className="lg:col-span-2">
-          <h2 className="font-semibold text-gray-900 dark:text-white mb-4">Meeting Activity (Last 7 Days)</h2>
+      {/* Bento row 1 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-auto lg:h-[300px]">
+        <div className="bg-surface border border-border rounded-xl p-6 lg:col-span-2 flex flex-col">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+              Meeting Activity (Last 7 Days)
+            </h3>
+          </div>
           {meetings.length > 0 ? (
             <WeeklyChart data={weeklyData} />
           ) : (
             <EmptyState
+              icon="bar_chart"
               title="No activity yet"
               subtitle="Upload a meeting to start seeing your weekly activity here."
             />
           )}
-        </Card>
+        </div>
 
-        <Card>
-          <h2 className="font-semibold text-gray-900 dark:text-white mb-4">Talk-Time Share</h2>
+        <div className="bg-surface border border-border rounded-xl p-6 flex flex-col items-center justify-center relative overflow-hidden">
+          <h3 className="font-sidebar-header text-sidebar-header text-text-primary absolute top-6 left-6">
+            Talk-Time Share
+          </h3>
           {speakerPieData.length > 0 ? (
-            <SpeakerPie data={speakerPieData} />
-          ) : (
-            <EmptyState
-              title="No speaker data yet"
-              subtitle="Speaker breakdowns will appear here once meetings are processed."
-            />
-          )}
-        </Card>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        <Card className="lg:col-span-2 !p-0 overflow-hidden">
-          <div className="flex items-center justify-between px-5 pt-5 pb-3">
-            <h2 className="font-semibold text-gray-900 dark:text-white">Recent Meetings</h2>
-            <button
-              onClick={() => navigate('/meetings')}
-              className="text-xs font-semibold text-primary-600 flex items-center gap-1 hover:underline"
-            >
-              View all <ArrowUpRight size={13} />
-            </button>
-          </div>
-          {recentMeetings.length === 0 ? (
-            <div className="px-5 pb-5">
-              <EmptyState
-                title="No meetings uploaded yet"
-                subtitle="Upload an audio or video recording to get started."
-              />
+            <div className="mt-8">
+              <SpeakerPie data={speakerPieData} />
             </div>
           ) : (
-            <div className="divide-y divide-gray-50 dark:divide-gray-800">
+            <EmptyState
+              icon="donut_large"
+              title="No speaker data yet"
+              subtitle="Breakdowns appear once a meeting finishes processing."
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Bento row 2 */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="bg-surface border border-border rounded-xl p-6 lg:col-span-2">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+              Recent Meetings
+            </h3>
+            <Link
+              to="/meetings"
+              className="font-label-sm text-label-sm text-primary hover:text-primary-container transition-colors"
+            >
+              View all
+            </Link>
+          </div>
+          {recentMeetings.length === 0 ? (
+            <EmptyState
+              icon="event_note"
+              title="No meetings uploaded yet"
+              subtitle="Upload an audio or video recording to get started."
+            />
+          ) : (
+            <div className="flex flex-col gap-2">
               {recentMeetings.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => navigate(`/meetings/${m.id}`)}
-                  className="w-full flex items-center justify-between gap-3 px-5 py-3 text-left hover:bg-gray-50/60 dark:hover:bg-gray-800/60 transition-colors"
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-800 dark:text-gray-100 truncate">{m.title}</p>
-                    <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5">
-                      <Clock size={11} /> {m.date} · {m.time}
-                    </p>
-                  </div>
-                  <Badge color={statusColor[m.status] || 'gray'}>{m.status}</Badge>
-                </button>
+                <MeetingRow key={m.id} meeting={m} />
               ))}
             </div>
           )}
-        </Card>
+        </div>
 
-        <Card>
-          <div className="flex items-center gap-2 mb-4">
-            <Tag size={16} className="text-primary-500" />
-            <h2 className="font-semibold text-gray-900 dark:text-white">Top Keywords</h2>
+        <div className="bg-surface border border-border rounded-xl p-6">
+          <div className="flex items-center gap-2 mb-6">
+            <Icon name="sell" className="text-primary" />
+            <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+              Top Keywords
+            </h3>
           </div>
           {topKeywords.length > 0 ? (
             <div className="flex flex-wrap gap-2">
-              {topKeywords.map((k, i) => (
+              {topKeywords.map((k) => (
                 <span
-                  key={i}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-50 dark:bg-gray-800 border border-gray-100 dark:border-gray-700 text-xs font-medium text-gray-600 dark:text-gray-300"
+                  key={k.word}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
                 >
                   {k.word}
-                  <span className="text-gray-400">{k.count}</span>
+                  <span className="text-text-faint">{k.count}</span>
                 </span>
               ))}
             </div>
           ) : (
             <EmptyState
+              icon="sell"
               title="No keywords yet"
-              subtitle="Keyword insights will show up here once meetings are processed."
+              subtitle="Keywords appear once a meeting has been summarized. They are counted from the transcript, so an empty panel means nothing has been processed yet."
             />
           )}
-        </Card>
+        </div>
       </div>
-    </div>
+    </>
   )
 }

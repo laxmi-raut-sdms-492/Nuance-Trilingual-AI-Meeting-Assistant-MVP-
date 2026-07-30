@@ -1,3 +1,17 @@
+/* Fonts are self-hosted, not loaded from the Google Fonts CDN as the Stitch
+ * export does. The stand demo cannot assume network: a failed CDN fetch
+ * silently falls back to system sans and the whole design reads wrong.
+ * Weights match the export's request — Inter 400/600, Jakarta 600,
+ * Devanagari 400.
+ */
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/plus-jakarta-sans/600.css';
+@import '@fontsource/noto-sans-devanagari/400.css';
+@import 'material-symbols/outlined.css';
+
+@import './tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -8,17 +22,175 @@
 
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background-color: #f8f9fb;
+  background-color: rgb(var(--color-background));
+  color: rgb(var(--color-on-background));
 }
 
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Devanagari needs a font that actually has the glyphs, and slightly more
+ * leading than Latin at the same size — the Stitch type scale encodes this as
+ * separate transcript-body (1.7) and transcript-body-hi (1.8) tokens. Applied
+ * by :lang() so a mixed transcript picks the right face per line without the
+ * component having to branch.
+ */
+:lang(hi),
+:lang(mr) {
+  font-family: 'Noto Sans Devanagari', 'Inter', sans-serif;
 }
-::-webkit-scrollbar-thumb {
-  background: #d1d5db;
-  border-radius: 4px;
+
+/* Scrollbar — the export hardcodes #131315 / #27272a / #353437, which are the
+ * background / border / surface-variant tokens. Using the tokens instead so it
+ * follows the light theme too. */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgb(var(--color-background));
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--color-border));
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(var(--color-surface-variant));
+}
+
+/* ---------------------------------------------------------------------------
+ * Component classes lifted from the <style> blocks in the design export.
+ * Stitch scattered these across individual screens; they are collected here so
+ * every ported screen shares one definition. Hardcoded hexes in the export are
+ * swapped for the equivalent tokens so light mode works.
+ * ------------------------------------------------------------------------ */
+@layer components {
+  .stat-card-hover:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 20px -2px rgb(var(--color-cta) / 0.1);
+  }
+
+  .input-base {
+    background-color: rgb(var(--color-surface));
+    border-color: rgb(var(--color-border));
+    color: rgb(var(--color-text-primary));
+  }
+  .input-base:focus {
+    border-color: rgb(var(--color-primary-container));
+    outline: none;
+    box-shadow: none;
+  }
+  .input-error,
+  .input-error:focus {
+    border-color: rgb(var(--color-error));
+  }
+
+  .progress-bar-fill {
+    transition: width 0.3s ease-in-out;
+  }
+  .chart-bar {
+    transition: height 0.5s ease-out;
+  }
+  .donut-segment {
+    transition: stroke-dasharray 1s ease-out;
+  }
+
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Processing state: skeleton rows while a meeting transcribes. */
+  .skeleton-shimmer {
+    background: linear-gradient(
+      90deg,
+      rgb(var(--color-border)) 25%,
+      rgb(var(--color-surface-variant)) 50%,
+      rgb(var(--color-border)) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+  @keyframes shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
+  }
+
+  .pulse-amber {
+    animation: pulse-amber 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pulse-amber {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
+  }
+
+  /* Empty states draw an animated dashed outline. */
+  .empty-dash {
+    stroke-dasharray: 8 8;
+    stroke-dashoffset: 100;
+    animation: dash 20s linear infinite;
+  }
+  @keyframes dash {
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  /* Audio player waveform — bars animate only while playing. */
+  .playing .wave-bar.active {
+    animation: pulse-wave 1s ease-in-out infinite;
+  }
+  .playing .wave-bar.active:nth-child(even) {
+    animation-delay: 0.2s;
+  }
+  .playing .wave-bar.active:nth-child(3n) {
+    animation-delay: 0.4s;
+  }
+  @keyframes pulse-wave {
+    0%,
+    100% {
+      transform: scaleY(0.4);
+    }
+    50% {
+      transform: scaleY(1);
+    }
+  }
+
+  /* Speaker enrollment recorder. */
+  .waveform-bar {
+    width: 4px;
+    border-radius: 2px;
+    background-color: rgb(var(--color-border));
+    animation: waveform-pulse 1s infinite alternate;
+  }
+  .waveform-bar.active {
+    background-color: rgb(var(--color-primary-container));
+  }
+  @keyframes waveform-pulse {
+    0% {
+      transform: scaleY(0.5);
+    }
+    100% {
+      transform: scaleY(1.5);
+    }
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shimmer,
+  .pulse-amber,
+  .empty-dash,
+  .playing .wave-bar.active,
+  .waveform-bar {
+    animation: none;
+  }
 }

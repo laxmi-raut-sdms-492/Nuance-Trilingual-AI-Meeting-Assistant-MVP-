@@ -1,7 +1,12 @@
-export default function Card({ children, className = '', ...rest }) {
+/**
+ * The export's standard container: bg-surface, 1px border, rounded-xl.
+ * Padding varies by context (p-5 on stat cards, p-6 on panels), so it is a
+ * prop rather than baked in.
+ */
+export default function Card({ children, className = '', padding = 'p-6', ...rest }) {
   return (
     <div
-      className={`bg-white dark:bg-gray-900 rounded-2xl border border-gray-100 dark:border-gray-800 shadow-card p-5 ${className}`}
+      className={`bg-surface border border-border rounded-xl ${padding} ${className}`}
       {...rest}
     >
       {children}

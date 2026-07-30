@@ -1,14 +1,37 @@
 import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { UploadCloud, FileAudio, X, CheckCircle2, Mic, ArrowLeft } from 'lucide-react'
 import toast from 'react-hot-toast'
-import Card from '../../components/common/Card.jsx'
-import Button from '../../components/common/Button.jsx'
+import Icon from '../../components/common/Icon.jsx'
 import AudioRecorder from '../../components/common/AudioRecorder.jsx'
 import { useMeetings } from '../../context/MeetingsContext.jsx'
-import { saveAudioBlob } from '../../utils/audioStore.js'
+import { describeError } from '../../services/api.js'
 
+/**
+ * Ported from the design export (create_meeting_details),
+ * create_meeting_source/ and create_meeting_upload_progress/ — one component,
+ * three steps, as the routing table already had it.
+ */
+
+// Must stay a subset of the backend's ALLOWED_UPLOAD_EXTENSIONS. The browser
+// recorder also produces .webm, which is accepted server-side but isn't
+// offered here because no one picks it from a file dialog.
 const ACCEPTED = ['.mp3', '.wav', '.mp4', '.m4a']
+
+// The export's dropzone advertises "Max 500MB". The backend's MAX_UPLOAD_MB is
+// 300, so this states 300 — promising a size the server rejects is worse than
+// differing from the mockup.
+const MAX_UPLOAD_MB = 300
+
+const AGENDA_LIMIT = 500
+
+function FieldError({ id, children }) {
+  return (
+    <div id={id} className="text-[11px] text-error font-medium flex items-center gap-1 mt-1">
+      <Icon name="error" className="text-[14px]" />
+      {children}
+    </div>
+  )
+}
 
 export default function UploadMeeting() {
   const navigate = useNavigate()
@@ -17,7 +40,6 @@ export default function UploadMeeting() {
   // step: 'details' -> 'source' (upload/record) -> in-progress/done
   const [step, setStep] = useState('details')
 
-  // Meeting details form state
   const [title, setTitle] = useState('')
   const [agenda, setAgenda] = useState('')
   const [formErrors, setFormErrors] = useState({})
@@ -26,16 +48,17 @@ export default function UploadMeeting() {
   const [dragOver, setDragOver] = useState(false)
   const [file, setFile] = useState(null)
   const [progress, setProgress] = useState(0)
-  const [status, setStatus] = useState('idle') // idle | uploading | done
+  const [status, setStatus] = useState('idle') // idle | uploading | done | error
   const [savedMeeting, setSavedMeeting] = useState(null)
+  const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
   const details = { title, agenda }
 
   const validateDetails = () => {
     const errors = {}
-    if (!title.trim()) errors.title = 'Meeting title is required'
-    if (!agenda.trim()) errors.agenda = 'Meeting agenda is required'
+    if (!title.trim()) errors.title = 'Meeting Title is required.'
+    if (!agenda.trim()) errors.agenda = 'Please provide an agenda for context.'
     setFormErrors(errors)
     return Object.keys(errors).length === 0
   }
@@ -45,19 +68,33 @@ export default function UploadMeeting() {
     if (validateDetails()) setStep('source')
   }
 
-  // Saves the real file/blob as a meeting record AND persists the actual
-  // audio bytes to IndexedDB so it can be played back later from the
-  // meeting details page. This only ever runs once per upload/recording -
-  // it's called directly from a plain callback (not from inside a setState
-  // updater), which avoids React 18 Strict Mode's dev-time double-invoke of
-  // updater functions - that double-invoke was the cause of "1 file shows
-  // as 2" in the dashboard counts.
-  const finishSave = async (f, blob) => {
-    const record = addMeeting(f, details)
-    await saveAudioBlob(record.id, blob || f)
-    setSavedMeeting(record)
-    setStatus('done')
-    return record
+  // Sends the real file to the backend, which stores it and queues
+  // transcription. `progress` is the genuine number of bytes on the wire
+  // reported by axios — an earlier build animated a fake timer that hit 100%
+  // regardless of whether anything had actually been uploaded. Don't.
+  const finishSave = async (f) => {
+    setFile(f)
+    setStatus('uploading')
+    setProgress(0)
+    setUploadError(null)
+
+    try {
+      const record = await addMeeting(f, details, (event) => {
+        if (!event.total) return
+        setProgress(Math.round((event.loaded / event.total) * 100))
+      })
+      setProgress(100)
+      setSavedMeeting(record)
+      setStatus('done')
+      toast.success('Uploaded. Transcription is running now.')
+      return record
+    } catch (err) {
+      const message = describeError(err)
+      setUploadError(message)
+      setStatus('error')
+      toast.error(message)
+      return null
+    }
   }
 
   const startUpload = (f) => {
@@ -66,25 +103,11 @@ export default function UploadMeeting() {
       toast.error(`Unsupported file type. Accepted: ${ACCEPTED.join(', ')}`)
       return
     }
-
-    setFile(f)
-    setStatus('uploading')
-    setProgress(0)
-
-    let current = 0
-    const interval = setInterval(() => {
-      current += 8
-      if (current >= 100) {
-        current = 100
-        clearInterval(interval)
-        setProgress(100)
-        finishSave(f).then(() => {
-          toast.success('File uploaded. It now appears in All Meetings.')
-        })
-      } else {
-        setProgress(current)
-      }
-    }, 150)
+    if (f.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      toast.error(`That file is over the ${MAX_UPLOAD_MB} MB limit.`)
+      return
+    }
+    finishSave(f)
   }
 
   const handleDrop = (e) => {
@@ -99,20 +122,15 @@ export default function UploadMeeting() {
     if (f) startUpload(f)
   }
 
-  const handleRecordingComplete = async (blob, seconds) => {
+  const handleRecordingComplete = async (blob) => {
     const ext = blob.type.includes('mp4') ? 'm4a' : 'webm'
     const name = `Recording ${new Date().toLocaleString(undefined, {
       month: 'short',
       day: 'numeric',
       hour: '2-digit',
-      minute: '2-digit'
+      minute: '2-digit',
     })}.${ext}`
-    const recordedFile = new File([blob], name, { type: blob.type })
-    setFile(recordedFile)
-    setStatus('uploading')
-    setProgress(100)
-    await finishSave(recordedFile, blob)
-    toast.success('Recording saved. It now appears in All Meetings.')
+    await finishSave(new File([blob], name, { type: blob.type }))
   }
 
   const reset = () => {
@@ -120,6 +138,7 @@ export default function UploadMeeting() {
     setProgress(0)
     setStatus('idle')
     setSavedMeeting(null)
+    setUploadError(null)
   }
 
   const startOver = () => {
@@ -130,23 +149,43 @@ export default function UploadMeeting() {
     setStep('details')
   }
 
+  const stepLabel =
+    status !== 'idle'
+      ? 'Step 3 of 3: Uploading & Processing'
+      : step === 'details'
+        ? 'Step 1 of 3: Details'
+        : 'Step 2 of 3: Provide Source'
+
   return (
-    <div className="space-y-6 max-w-3xl">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Create Meeting</h1>
-        <p className="text-sm text-gray-400 mt-1">
-          {step === 'details'
-            ? 'Start by giving your meeting a title, type, and agenda.'
-            : 'Upload a recording or record one live. Files are saved to your meeting list right in this browser — connect the backend from the FSD to generate real transcripts and summaries.'}
-        </p>
+    <div className="w-full max-w-[768px] mx-auto flex flex-col gap-8">
+      <div className="flex justify-between items-start gap-4">
+        <div>
+          <h1 className="font-headline-lg-mobile md:font-headline-lg text-headline-lg-mobile md:text-headline-lg text-text-primary">
+            Create Meeting
+          </h1>
+          <p className="font-meta-data text-meta-data text-text-muted mt-1">{stepLabel}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate('/meetings')}
+          aria-label="Cancel and go back to meetings"
+          className="text-text-muted hover:text-text-primary transition-colors p-2 rounded-lg hover:bg-surface-container"
+        >
+          <Icon name="close" className="text-2xl" />
+        </button>
       </div>
 
+      {/* ---------------------------------------------------------------- */}
       {step === 'details' && (
-        <Card>
-          <form onSubmit={handleContinue} className="space-y-4">
-            <div>
-              <label htmlFor="meeting-title" className="block text-sm font-semibold text-gray-800 mb-1.5">
-                Meeting Title <span className="text-red-500">*</span>
+        <div className="bg-surface rounded-xl border border-border overflow-hidden relative">
+          <div className="h-1 w-full bg-primary-container absolute top-0 left-0" />
+          <form onSubmit={handleContinue} className="p-8 space-y-8" noValidate>
+            <div className="space-y-2">
+              <label
+                className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
+                htmlFor="meeting-title"
+              >
+                Meeting Title <span className="text-error">*</span>
               </label>
               <input
                 id="meeting-title"
@@ -154,148 +193,243 @@ export default function UploadMeeting() {
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="e.g. Q3 Marketing Sync"
-                className={`w-full rounded-xl border px-4 py-2.5 text-sm text-gray-800 placeholder:text-gray-300 focus:outline-none focus:ring-2 focus:ring-primary-400/40 ${
-                  formErrors.title ? 'border-red-300' : 'border-gray-200 focus:border-primary-400'
+                aria-invalid={Boolean(formErrors.title)}
+                aria-describedby={formErrors.title ? 'title-error' : undefined}
+                className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors ${
+                  formErrors.title ? 'input-error' : ''
                 }`}
               />
-              {formErrors.title && <p className="text-xs text-red-500 mt-1">{formErrors.title}</p>}
+              {formErrors.title && <FieldError id="title-error">{formErrors.title}</FieldError>}
             </div>
 
-            <div>
-              <label htmlFor="meeting-agenda" className="block text-sm font-semibold text-gray-800 mb-1.5">
-                Agenda <span className="text-red-500">*</span>
+            <div className="space-y-2">
+              <label
+                className="font-label-sm text-label-sm text-text-primary uppercase tracking-wider flex justify-between"
+                htmlFor="meeting-agenda"
+              >
+                <span>
+                  Agenda <span className="text-error">*</span>
+                </span>
+                <span className="text-text-muted font-normal lowercase tracking-normal">
+                  {agenda.length}/{AGENDA_LIMIT}
+                </span>
               </label>
               <textarea
                 id="meeting-agenda"
                 value={agenda}
+                maxLength={AGENDA_LIMIT}
                 onChange={(e) => setAgenda(e.target.value)}
                 placeholder="What will this meeting cover?"
-                rows={2}
-                className={`w-full rounded-xl border px-4 py-2.5 text-sm text-gray-800 placeholder:text-gray-300 resize-none focus:outline-none focus:ring-2 focus:ring-primary-400/40 ${
-                  formErrors.agenda ? 'border-red-300' : 'border-gray-200 focus:border-primary-400'
+                rows={4}
+                aria-invalid={Boolean(formErrors.agenda)}
+                aria-describedby={formErrors.agenda ? 'agenda-error' : undefined}
+                className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors resize-y ${
+                  formErrors.agenda ? 'input-error' : ''
                 }`}
               />
-              {formErrors.agenda && <p className="text-xs text-red-500 mt-1">{formErrors.agenda}</p>}
+              {formErrors.agenda && <FieldError id="agenda-error">{formErrors.agenda}</FieldError>}
             </div>
 
-            <div className="flex justify-end">
-              <Button type="submit">Continue</Button>
+            <div className="pt-6 border-t border-border flex justify-end">
+              <button
+                type="submit"
+                className="bg-cta text-on-cta font-label-sm text-label-sm px-6 py-3 rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2"
+              >
+                Continue
+                <Icon name="arrow_forward" size={18} />
+              </button>
             </div>
           </form>
-        </Card>
+        </div>
       )}
 
+      {/* ---------------------------------------------------------------- */}
       {step === 'source' && (
         <>
           {status === 'idle' && (
-            <div className="flex items-center justify-between">
+            <>
               <button
+                type="button"
                 onClick={() => setStep('details')}
-                className="flex items-center gap-1.5 text-sm font-semibold text-gray-500 hover:text-gray-700"
+                className="group flex items-center gap-2 text-text-muted hover:text-text-primary transition-colors -mt-4"
               >
-                <ArrowLeft size={15} /> Back to details
+                <Icon name="arrow_back" className="text-lg" />
+                <span className="font-meta-data text-meta-data">Back to details</span>
               </button>
-              <div className="inline-flex p-1 rounded-xl bg-gray-100">
-                <button
-                  onClick={() => setMode('upload')}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                    mode === 'upload' ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  <UploadCloud size={15} /> Upload File
-                </button>
-                <button
-                  onClick={() => setMode('record')}
-                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-colors ${
-                    mode === 'record' ? 'bg-white text-primary-700 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                  }`}
-                >
-                  <Mic size={15} /> Record Audio
-                </button>
+
+              <div className="flex p-1 bg-surface-container rounded-lg w-fit border border-border">
+                {[
+                  { key: 'upload', icon: 'upload_file', label: 'Upload File' },
+                  { key: 'record', icon: 'mic', label: 'Record Audio' },
+                ].map((m) => (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setMode(m.key)}
+                    className={`px-6 py-2 rounded font-label-sm text-label-sm flex items-center gap-2 transition-all ${
+                      mode === m.key
+                        ? 'bg-surface-raised text-text-primary shadow-sm'
+                        : 'text-text-muted hover:text-text-primary hover:bg-surface/50'
+                    }`}
+                  >
+                    <Icon name={m.icon} className="text-[16px]" />
+                    {m.label}
+                  </button>
+                ))}
               </div>
+            </>
+          )}
+
+          {status === 'idle' && mode === 'upload' && (
+            <div
+              role="button"
+              tabIndex={0}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragOver(true)
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={handleDrop}
+              onClick={() => inputRef.current?.click()}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click()
+              }}
+              className={`relative group rounded-xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center py-20 px-6 text-center cursor-pointer ${
+                dragOver
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border bg-surface hover:border-primary hover:bg-primary/5'
+              }`}
+            >
+              <div className="w-16 h-16 rounded-full bg-surface-raised group-hover:bg-primary/20 flex items-center justify-center mb-6 transition-colors border border-border group-hover:border-primary/50">
+                <Icon
+                  name="cloud_upload"
+                  className="text-3xl text-text-muted group-hover:text-primary transition-colors"
+                />
+              </div>
+              <h3 className="font-sidebar-header text-sidebar-header mb-2 text-text-primary">
+                Drag &amp; drop your file here
+              </h3>
+              <p className="font-meta-data text-meta-data text-text-muted mb-6">
+                or click to browse your computer
+              </p>
+              <div className="px-4 py-2 rounded-full bg-surface-container-high border border-border font-label-sm text-label-sm text-text-faint">
+                Supported: MP3, WAV, M4A, MP4 (Max {MAX_UPLOAD_MB} MB)
+              </div>
+              <input
+                ref={inputRef}
+                type="file"
+                accept={ACCEPTED.join(',')}
+                className="hidden"
+                onChange={handleBrowse}
+              />
             </div>
           )}
 
-          <Card>
-            {status === 'idle' && mode === 'upload' && (
-              <div
-                onDragOver={(e) => {
-                  e.preventDefault()
-                  setDragOver(true)
-                }}
-                onDragLeave={() => setDragOver(false)}
-                onDrop={handleDrop}
-                onClick={() => inputRef.current?.click()}
-                className={`flex flex-col items-center justify-center gap-3 border-2 border-dashed rounded-2xl py-16 cursor-pointer transition-colors ${
-                  dragOver ? 'border-primary-400 bg-primary-50/50' : 'border-gray-200 hover:border-primary-300'
-                }`}
-              >
-                <div className="w-14 h-14 rounded-full bg-primary-50 flex items-center justify-center">
-                  <UploadCloud size={24} className="text-primary-600" />
-                </div>
-                <p className="text-sm font-semibold text-gray-800">Drag & drop your file here</p>
-                <p className="text-xs text-gray-400">or click to browse from your computer</p>
-                <p className="text-xs text-gray-300 mt-2">Accepted formats: MP3, WAV, MP4, M4A</p>
-                <input
-                  ref={inputRef}
-                  type="file"
-                  accept={ACCEPTED.join(',')}
-                  className="hidden"
-                  onChange={handleBrowse}
-                />
-              </div>
-            )}
-
-            {status === 'idle' && mode === 'record' && (
+          {status === 'idle' && mode === 'record' && (
+            <div className="rounded-xl border border-border bg-surface p-8">
               <AudioRecorder onRecordingComplete={handleRecordingComplete} />
-            )}
+            </div>
+          )}
 
-            {status !== 'idle' && file && (
-              <div className="space-y-4">
-                <div className="flex items-center gap-3 p-4 rounded-xl bg-gray-50 border border-gray-100">
-                  <div className="w-10 h-10 rounded-lg bg-primary-50 flex items-center justify-center shrink-0">
-                    <FileAudio size={18} className="text-primary-600" />
+          {status !== 'idle' && file && (
+            <div className="bg-surface border border-border rounded-xl p-8 flex flex-col gap-6">
+              <div className="flex items-center justify-between p-4 bg-surface-raised border border-border rounded-lg gap-3">
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="w-10 h-10 rounded-md bg-surface-container flex items-center justify-center text-primary shrink-0">
+                    <Icon name="audio_file" />
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800 truncate">{file.name}</p>
-                    <p className="text-xs text-gray-400">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+                  <div className="flex flex-col min-w-0">
+                    <span className="font-meta-data text-meta-data text-text-primary truncate">
+                      {file.name}
+                    </span>
+                    <span className="font-label-sm text-label-sm text-text-muted">
+                      {(file.size / (1024 * 1024)).toFixed(2)} MB
+                    </span>
                   </div>
-                  {status === 'done' ? (
-                    <CheckCircle2 size={20} className="text-green-500" />
-                  ) : (
-                    <button onClick={reset} className="text-gray-400 hover:text-gray-600">
-                      <X size={18} />
-                    </button>
-                  )}
                 </div>
+                {status === 'done' ? (
+                  <Icon name="check_circle" className="text-success shrink-0" />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={reset}
+                    aria-label="Cancel upload"
+                    className="text-text-muted hover:text-error transition-colors p-1 shrink-0"
+                  >
+                    <Icon name="close" />
+                  </button>
+                )}
+              </div>
 
-                <div>
-                  <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+              {status !== 'error' && (
+                <div className="flex flex-col gap-3">
+                  <div className="flex justify-between items-center font-meta-data text-meta-data">
+                    <span className="text-text-primary">
+                      {status === 'done' ? 'Upload complete' : 'Uploading...'}
+                    </span>
+                    <span className="text-primary font-semibold">{progress}%</span>
+                  </div>
+                  <div
+                    className="w-full h-2 bg-surface-container-high rounded-full overflow-hidden"
+                    role="progressbar"
+                    aria-valuenow={progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
                     <div
-                      className="h-full bg-primary-600 rounded-full transition-all duration-150"
+                      className="h-full bg-cta progress-bar-fill rounded-full"
                       style={{ width: `${progress}%` }}
                     />
                   </div>
-                  <p className="text-xs text-gray-400 mt-2">
-                    {status === 'done' ? 'Saved to your meeting list.' : `Uploading... ${progress}%`}
+                  <p className="font-meta-data text-meta-data text-text-muted">
+                    {status === 'done'
+                      ? 'Transcription is running in the background — the meeting moves from Processing to Completed on its own.'
+                      : 'Keep this tab open until the upload finishes.'}
                   </p>
                 </div>
+              )}
 
+              {status === 'error' && (
+                <div className="rounded-lg border border-error/20 bg-error/10 px-4 py-3">
+                  <p className="font-label-sm text-label-sm text-error">Upload failed</p>
+                  <p className="font-meta-data text-meta-data text-text-muted mt-1">{uploadError}</p>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-3 pt-2 border-t border-border">
+                {status === 'error' && (
+                  <button
+                    type="button"
+                    onClick={reset}
+                    className="px-4 py-2.5 rounded-lg border border-border text-text-primary font-label-sm text-label-sm hover:bg-surface-raised transition-colors"
+                  >
+                    Try Again
+                  </button>
+                )}
                 {status === 'done' && (
-                  <div className="flex gap-3">
-                    <Button onClick={startOver} variant="secondary">
-                      Create Another Meeting
-                    </Button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={startOver}
+                      className="px-4 py-2.5 rounded-lg border border-border text-text-primary font-label-sm text-label-sm hover:bg-surface-raised transition-colors"
+                    >
+                      Create Another
+                    </button>
                     {savedMeeting && (
-                      <Button onClick={() => navigate(`/meetings/${savedMeeting.id}`)}>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/meetings/${savedMeeting.id}`)}
+                        className="px-6 py-2.5 rounded-lg bg-cta text-on-cta font-label-sm text-label-sm hover:bg-primary-container transition-colors flex items-center gap-2"
+                      >
                         View Meeting
-                      </Button>
+                        <Icon name="arrow_forward" size={18} />
+                      </button>
                     )}
-                  </div>
+                  </>
                 )}
               </div>
-            )}
-          </Card>
+            </div>
+          )}
         </>
       )}
     </div>

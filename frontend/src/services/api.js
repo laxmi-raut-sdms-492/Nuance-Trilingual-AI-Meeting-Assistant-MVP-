@@ -37,6 +37,18 @@ export const meetingsApi = {
 
   languages: () => api.get('/languages'),
 
+  // Cosmetic rename of a diarized label (e.g. "Speaker_00") to a human name,
+  // scoped to one meeting. Does not touch voice profiles -- see speakersApi
+  // for enrolling a voice so future meetings auto-label it.
+  renameSpeaker: (meetingId, speakerLabel, name) => {
+    const formData = new FormData()
+    formData.append('name', name)
+    return api.patch(
+      `/meetings/${meetingId}/speakers/${encodeURIComponent(speakerLabel)}`,
+      formData
+    )
+  },
+
   // The <audio> element fetches this itself, so it needs a plain URL rather
   // than an axios call.
   audioUrl: (id) => `${API_BASE_URL}/meetings/${id}/audio`

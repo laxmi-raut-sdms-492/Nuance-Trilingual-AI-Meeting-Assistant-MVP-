@@ -5,6 +5,7 @@ import EmptyState from '../../components/common/EmptyState.jsx'
 import Loader from '../../components/common/Loader.jsx'
 import AudioPlayer from '../../components/common/AudioPlayer.jsx'
 import { useMeetings } from '../../context/MeetingsContext.jsx'
+import { meetingsApi, describeError } from '../../services/api.js'
 
 /**
  * Ported from the design export (meeting_details_completed),
@@ -32,6 +33,79 @@ function MetaChip({ icon, children }) {
       <Icon name={icon} className="text-[16px]" />
       {children}
     </div>
+  )
+}
+
+/**
+ * Click a diarized label (e.g. "SPEAKER_00") to rename it. Renaming is
+ * scoped to this meeting only and is purely cosmetic -- it relabels every
+ * line in the transcript and the speaker stats panel, but does not touch
+ * voice profiles (see Settings > Speaker Enrollment for that).
+ */
+function SpeakerLabel({ meetingId, speaker, color, onRenamed }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue] = useState(speaker)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    setValue(speaker)
+  }, [speaker])
+
+  const commit = async () => {
+    const trimmed = value.trim()
+    if (!trimmed || trimmed === speaker) {
+      setEditing(false)
+      setValue(speaker)
+      return
+    }
+    setSaving(true)
+    setError('')
+    try {
+      await meetingsApi.renameSpeaker(meetingId, speaker, trimmed)
+      setEditing(false)
+      onRenamed?.()
+    } catch (err) {
+      setError(describeError(err))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <input
+          autoFocus
+          value={value}
+          disabled={saving}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commit()
+            if (e.key === 'Escape') {
+              setEditing(false)
+              setValue(speaker)
+            }
+          }}
+          onBlur={commit}
+          className="font-label-sm text-label-sm uppercase bg-transparent border-b border-primary outline-none w-28"
+          style={{ color }}
+        />
+        {error && <span className="text-[10px] text-error normal-case">{error}</span>}
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      title="Click to rename this speaker for this meeting"
+      onClick={() => setEditing(true)}
+      className="font-label-sm text-label-sm uppercase hover:underline decoration-dotted underline-offset-2"
+      style={{ color }}
+    >
+      {speaker}
+    </button>
   )
 }
 
@@ -73,13 +147,15 @@ function NotGenerated({ what }) {
  * engine that wrote it is named instead of leaving generated text looking
  * extracted. `extractive` is the fallback that only ever copies real lines.
  */
+
 function SummaryProvenance({ engine }) {
   if (!engine) return null
+
   return (
     <p className="font-meta-data text-meta-data text-text-faint mt-3">
       {engine === 'extractive'
-        ? 'Extracted verbatim from the transcript — no model was used.'
-        : `Generated from the transcript by ${engine}. Not verified line by line.`}
+        ? 'Extracted verbatim from the transcript.'
+        : 'AI-generated summary based on the meeting transcript.'}
     </p>
   )
 }
@@ -328,12 +404,12 @@ export default function MeetingDetails() {
                                 className="w-2 h-2 rounded-full shrink-0"
                                 style={{ backgroundColor: t.color }}
                               />
-                              <span
-                                className="font-label-sm text-label-sm uppercase"
-                                style={{ color: t.color }}
-                              >
-                                {t.speaker}
-                              </span>
+                              <SpeakerLabel
+                                meetingId={id}
+                                speaker={t.speaker}
+                                color={t.color}
+                                onRenamed={load}
+                              />
                               {/* Language is per line, not per meeting — a
                                   trilingual meeting switches mid-conversation. */}
                               {t.language && (

@@ -297,6 +297,55 @@ def update_meeting(meeting_id: str, **updates) -> dict | None:
         return _to_dict(meeting)
 
 
+def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None:
+    """
+    Rename a speaker label across one meeting: every transcript line and the
+    speaker_stats row.
+
+    `new_name` collapsing onto an existing speaker (e.g. renaming Speaker_04
+    to a name already used by Speaker_01) merges their stats rather than
+    violating the (meeting_id, name) uniqueness constraint on speaker_stats.
+    """
+    new_name = new_name.strip()
+    if not new_name:
+        return None
+
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None:
+            return None
+
+        session.execute(
+            TranscriptLine.__table__.update()
+            .where(TranscriptLine.meeting_id == meeting_id, TranscriptLine.speaker == old_name)
+            .values(speaker=new_name)
+        )
+
+        old_stat = session.scalars(
+            select(SpeakerStat).where(
+                SpeakerStat.meeting_id == meeting_id, SpeakerStat.name == old_name
+            )
+        ).first()
+        if old_stat is not None:
+            existing = session.scalars(
+                select(SpeakerStat).where(
+                    SpeakerStat.meeting_id == meeting_id, SpeakerStat.name == new_name
+                )
+            ).first()
+            if existing is not None and existing.id != old_stat.id:
+                # target name already exists on another speaker in this meeting
+                # -- merge seconds/pct into it and drop the old row.
+                existing.seconds += old_stat.seconds
+                existing.pct += old_stat.pct
+                session.delete(old_stat)
+            else:
+                old_stat.name = new_name
+
+        session.flush()
+        meeting = session.get(Meeting, meeting_id)
+        return _to_dict(meeting)
+
+
 def delete_meeting(meeting_id: str) -> bool:
     """Delete the meeting AND its recording. This is what the API exposes."""
     with session_scope() as session:

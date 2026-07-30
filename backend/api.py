@@ -217,6 +217,22 @@ def delete_meeting(meeting_id: str):
         raise HTTPException(404, "Meeting not found.")
     return {"status": "deleted", "id": meeting_id}
 
+@router.patch("/meetings/{meeting_id}/speakers/{speaker_label}")
+def rename_speaker(meeting_id: str, speaker_label: str, name: str = Form(...)):
+    """
+    Rename a diarized speaker label (e.g. Speaker_00) to a human name across
+    one meeting's transcript and speaker stats. Purely cosmetic -- it does not
+    touch voice profiles or affect future diarization; see /enroll for that.
+    """
+    new_name = name.strip()
+    if not new_name:
+        raise HTTPException(422, "Name cannot be empty.")
+
+    meeting = store.rename_speaker(meeting_id, speaker_label, new_name)
+    if meeting is None:
+        raise HTTPException(404, "Meeting not found.")
+    return meeting
+
 
 @router.get("/meetings/{meeting_id}/audio")
 def get_meeting_audio(meeting_id: str):

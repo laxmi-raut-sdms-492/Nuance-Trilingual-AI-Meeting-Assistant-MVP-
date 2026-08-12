@@ -16,9 +16,15 @@ Flow per audio block:
            - diarization: assign a stable Speaker_XX label (models/diarizer.py)
            - identification: match the cluster's stable centroid against
              enrolled voices
-           - transcription of just this sub-segment, with its own language
-             detected independently (models/asr.py)
-           - one transcript entry, sent back to the frontend immediately
+           - Language Change Detection (models/lcd.py) — one speaker can
+             CODE-SWITCH mid-breath with no pause, so a single-speaker
+             sub-segment may still hold two languages; this cuts it into
+             language-homogeneous pieces. Everything above is computed once
+             and shared by every piece: the speaker did not change.
+           - for each piece: transcription with its own language detected
+             independently (models/asr.py)
+           - one transcript entry per piece, sent back to the frontend
+             immediately
 
 The same class drives both paths:
   live   — main.py's WebSocket calls process_chunk() as audio arrives
@@ -44,6 +50,7 @@ from models.embedding import get_embedding
 from models.diarizer import SessionDiarizer
 from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
+from models.lcd import split_on_language_change
 from models.asr import transcribe, transcribe_with_context
 from models.identifier import SpeakerIdentifier
 from models.name_hints import (
@@ -509,7 +516,7 @@ class MeetingSession:
                 sub_end = seg_start + sub_end_sample / SAMPLE_RATE
 
                 try:
-                    entry = self._process_subsegment(sub_start, sub_end, sub_audio)
+                    entries = self._process_subsegment(sub_start, sub_end, sub_audio)
                 except Exception as e:
                     # One bad segment (degenerate/NaN embedding, empty audio,
                     # unexpected model error) must not kill the rest of the
@@ -517,16 +524,31 @@ class MeetingSession:
                     logger.error(f"[{sub_start:.1f}-{sub_end:.1f}s] segment processing failed, skipping: {e}")
                     self.failed_segments += 1
                     self.last_error = str(e)
-                    entry = None
+                    entries = []
 
-                if entry:
-                    new_entries.append(entry)
+                new_entries.extend(entries)
 
         return new_entries
 
-    def _process_subsegment(self, start: float, end: float, audio) -> dict | None:
+    def _process_subsegment(self, start: float, end: float, audio) -> list[dict]:
+        """
+        One single-speaker sub-segment -> zero or more transcript entries.
+
+        More than one when the speaker code-switched inside it with no pause:
+        models/lcd.py cuts the audio where the language changes, and each
+        piece is transcribed by the engine its own language calls for. Before
+        that split existed the whole sub-segment went to one engine and the
+        minority-language half came back mangled.
+
+        Everything about WHO is computed once for the whole sub-segment and
+        shared by every piece. The speaker did not change — only the language
+        did — and re-embedding a 1.5s fragment would risk a false speaker
+        split, which is the over-split problem offline_diarizer.py exists to
+        undo. Sharing the embedding also keeps self._embeddings aligned with
+        self.transcript, which the offline recluster pass requires.
+        """
         if len(audio) < MIN_SPEECH_SAMPLES or rms(audio) < self._silence_threshold:
-            return None  # too short or too quiet to be meaningful speech
+            return []  # too short or too quiet to be meaningful speech
 
         embedding = get_embedding(audio)
         speaker_label = self.diarizer.add_segment(start, end, embedding)
@@ -534,12 +556,86 @@ class MeetingSession:
         stable_embedding = self.diarizer.get_centroid(speaker_label)
         identified_as, confidence = self.identifier.identify(stable_embedding)
 
-        if self._full_audio is not None:
+        try:
+            pieces = split_on_language_change(audio)
+        except Exception as exc:
+            # A boundary search that fails must cost nothing but the split —
+            # the segment is still perfectly transcribable as one piece.
+            logger.warning(f"[{start:.1f}s] language change detection failed: {exc}")
+            pieces = [(0, len(audio), None)]
+
+        was_split = len(pieces) > 1
+
+        entries: list[dict] = []
+        for piece_start_sample, piece_end_sample, detected_by_lcd in pieces:
+            piece_start = start + piece_start_sample / SAMPLE_RATE
+            piece_end = start + piece_end_sample / SAMPLE_RATE
+            piece_audio = audio[piece_start_sample:piece_end_sample]
+
+            entry = self._transcribe_piece(
+                piece_start,
+                piece_end,
+                piece_audio,
+                speaker_label=speaker_label,
+                embedding=embedding,
+                stable_embedding=stable_embedding,
+                identified_as=identified_as,
+                confidence=confidence,
+                was_split=was_split,
+                lcd_language=detected_by_lcd if was_split else None,
+            )
+            if entry:
+                entries.append(entry)
+
+        return entries
+
+    def _transcribe_piece(
+        self,
+        start: float,
+        end: float,
+        audio,
+        *,
+        speaker_label: str,
+        embedding,
+        stable_embedding,
+        identified_as: str,
+        confidence: float,
+        was_split: bool = False,
+        lcd_language: str | None = None,
+    ) -> dict | None:
+        """
+        Transcribe one language-homogeneous piece and append its entry.
+
+        The language is decided here, not by lcd.py: that module locates the
+        boundary with a cheap model, and Whisper — the better detector, now
+        looking at audio that really is one language — decides what it is.
+
+        A piece that came from a split is transcribed WITHOUT surrounding
+        context, unlike every other segment. transcribe_with_context detects
+        the language over a window padded by seconds on each side, which is the
+        better guess normally and exactly wrong here: the audio on either side
+        of a language boundary is the other language, and it is usually the
+        longer side, so the padded window would hand the minority piece
+        straight back to the majority engine — undoing the split that just
+        found it.
+        """
+        if len(audio) < MIN_SPEECH_SAMPLES:
+            return None
+
+        # Same reason: the meeting-dominant hint rescues weak detection on an
+        # ordinary segment, but on a piece we split *because* the language
+        # changed it pulls toward the language we just proved this piece is
+        # not. lcd's own label is weak evidence, but it is the only evidence
+        # drawn from this exact audio — and where it is least reliable
+        # (Hindi vs Marathi) both answers route to the same engine anyway.
+        hint = lcd_language or self.dominant_language  # lcd_language is None unless split
+
+        if self._full_audio is not None and not was_split:
             asr = transcribe_with_context(
-                self._full_audio, start, end, hint_language=self.dominant_language
+                self._full_audio, start, end, hint_language=hint
             )
         else:
-            asr = transcribe(audio, hint_language=self.dominant_language)
+            asr = transcribe(audio, hint_language=hint)
         if not asr["text"]:
             return None
 
@@ -577,10 +673,10 @@ class MeetingSession:
             "language_prob": asr["language_prob"],
             "language_detected": asr["language_detected"],
             "language_fallback": asr["language_fallback"],
-            # Two languages scored almost equally on this segment, which
-            # usually means both were spoken in it. The segment is still
-            # transcribed as one language by one engine, so the other half is
-            # probably mangled — this is what says so.
+            # Two languages scored almost equally on this piece. After the LCD
+            # split this should be rare — a piece that still trips it is one
+            # the boundary search could not cleanly separate, which is exactly
+            # when a reader most needs telling.
             "language_margin": asr.get("language_margin", 1.0),
             "language_mixed_suspected": asr.get("language_mixed_suspected", False),
             "raw_text": raw_text,
@@ -589,7 +685,9 @@ class MeetingSession:
         }
         self.transcript.append(entry)
         # Keep the raw segment embedding (not the cluster centroid) so the
-        # offline recluster pass sees each line's own voice fingerprint.
+        # offline recluster pass sees each line's own voice fingerprint. Every
+        # piece of one sub-segment shares it — same voice, and the recluster
+        # pass requires one embedding per transcript line.
         self._embeddings.append(np.asarray(embedding, dtype=np.float32).copy())
         if self._on_transcript_update:
             try:

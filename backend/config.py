@@ -120,6 +120,61 @@ ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY = os.getenv(
     "ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY", "1"
 ).lower() in ("1", "true", "yes")
 
+# --- Language Change Detection (splitting a segment on a code-switch) ---
+#
+# scd.py splits a VAD segment where the SPEAKER changes. This splits it where
+# the LANGUAGE changes, so "The deadline is Friday म्हणजे उद्या" — one breath,
+# no pause, one segment — stops being decoded end to end by a single engine
+# with half the words coming back mangled.
+#
+# Division of labour, and it matters: the LID model below finds WHERE the
+# switch is; it does not decide what the languages are. Whisper's
+# detect_language re-runs on each resulting piece and decides that, because it
+# is markedly better at hi vs mr — VoxLingua107 confuses closely related
+# Indic languages. A cheap model that is only trusted for boundaries can be
+# wrong about the label and still be useful.
+LCD_ENABLED = os.getenv("LCD_ENABLED", "1").lower() in ("1", "true", "yes")
+
+# Spoken-language ID model. ECAPA-TDNN, the same architecture already loaded
+# for speaker embeddings, so this adds a second small model rather than a new
+# class of dependency.
+LID_MODEL_SOURCE = os.getenv(
+    "LID_MODEL_SOURCE", "speechbrain/lang-id-voxlingua107-ecapa"
+)
+
+# Window geometry. Deliberately close to SCD's (1.5s/0.5s): that pass already
+# runs an ECAPA forward per window over every segment ≥2s, so this costs about
+# the same as a stage the pipeline has always paid for. 2.0s rather than 1.5s
+# because language ID needs more phonetic material than speaker ID does.
+LCD_WINDOW_SECONDS = float(os.getenv("LCD_WINDOW_SECONDS", "2.0"))
+LCD_HOP_SECONDS = float(os.getenv("LCD_HOP_SECONDS", "0.5"))
+
+# Below this there is no room for a switch plus two usable pieces.
+LCD_MIN_SEGMENT_SECONDS = float(os.getenv("LCD_MIN_SEGMENT_SECONDS", "3.0"))
+
+# Pieces shorter than this are merged back into a neighbour instead of being
+# emitted. MIN_SPEECH_SECONDS (1.0) is the floor below which Whisper is handed
+# mostly-silence and starts inventing outro captions, so cutting a 0.6s piece
+# out would trade a mangled word for a hallucinated sentence. Keeping it
+# attached leaves the text imperfect but real.
+LCD_MIN_PIECE_SECONDS = float(os.getenv("LCD_MIN_PIECE_SECONDS", "1.5"))
+
+# Mode filter width over the per-window language labels. One window landing on
+# a loanword or a name should not open a new language run.
+LCD_SMOOTHING_WINDOWS = int(os.getenv("LCD_SMOOTHING_WINDOWS", "3"))
+
+# A window whose top posterior is below this says nothing useful; it inherits
+# its predecessor's label rather than voting.
+LCD_MIN_WINDOW_CONFIDENCE = float(os.getenv("LCD_MIN_WINDOW_CONFIDENCE", "0.45"))
+
+# The hop only locates a boundary to within ±hop/2. Speakers pause very
+# briefly when switching language, so the true cut is almost always the
+# quietest instant nearby — search this far either side for it. Nearly free
+# (short-time RMS over a fraction of a second) and worth more than a smaller
+# hop, which would cost a forward pass per window.
+LCD_SNAP_RADIUS_SECONDS = float(os.getenv("LCD_SNAP_RADIUS_SECONDS", "0.75"))
+LCD_SNAP_FRAME_MS = int(os.getenv("LCD_SNAP_FRAME_MS", "20"))
+
 # --- ASR quality guards ---
 #
 # Whisper is an autoregressive decoder with no alignment constraint: nothing

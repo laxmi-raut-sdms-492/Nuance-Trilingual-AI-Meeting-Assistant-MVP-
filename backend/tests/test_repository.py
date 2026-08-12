@@ -151,7 +151,12 @@ def test_update_replaces_children_when_they_are_passed():
     record = make_record()
     repo.add_meeting(record)
 
-    new_line = dict(record["transcript"][0], text="Replaced.")
+    new_line = {
+        **record["transcript"][0],
+        "text": "Replaced.",
+        "raw_text": "Replaced.",
+        "cleaned_text": "Replaced.",
+    }
     repo.update_meeting(record["id"], transcript=[new_line])
 
     stored = repo.get_meeting(record["id"])
@@ -169,7 +174,15 @@ def test_reprocessing_replaces_children_that_collide_on_their_unique_keys():
     record = make_record()
     repo.add_meeting(record)
 
-    rewritten = [dict(t, text=f"{t['text']} (take two)") for t in record["transcript"]]
+    rewritten = [
+        {
+            **t,
+            "text": f"{t['text']} (take two)",
+            "raw_text": f"{t['text']} (take two)",
+            "cleaned_text": f"{t['text']} (take two)",
+        }
+        for t in record["transcript"]
+    ]
     repo.update_meeting(
         record["id"],
         transcript=rewritten,
@@ -362,7 +375,15 @@ def test_search_respects_the_limit():
 
 def test_search_caps_matches_at_five_but_counts_them_all():
     line = make_record()["transcript"][0]
-    transcript = [dict(line, text=f"budget line {i}") for i in range(8)]
+    transcript = [
+        {
+            **line,
+            "text": f"budget line {i}",
+            "raw_text": f"budget line {i}",
+            "cleaned_text": f"budget line {i}",
+        }
+        for i in range(8)
+    ]
     repo.add_meeting(make_record(transcript=transcript))
 
     result = repo.search("budget line")[0]

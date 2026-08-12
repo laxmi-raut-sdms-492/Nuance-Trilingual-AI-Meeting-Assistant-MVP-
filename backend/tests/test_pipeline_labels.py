@@ -119,3 +119,38 @@ def test_finalize_merges_same_voice_split_across_clusters():
     assert session.transcript[0]["speaker"] == "Anushka"
     assert session.transcript[1]["speaker"] == "Anushka"
     assert session.transcript[1]["speaker_label"] == "Speaker_02"
+
+
+def test_finalize_repairs_collapsed_greeting_reply():
+    """Two people on one label: greeting reply becomes the addressee."""
+    centroid = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+    identifier = _FakeIdentifier({(1.0, 0.0, 0.0): ("Vaishnavi", 0.95)})
+    session = MeetingSession("MTG-test", identifier)
+    session.diarizer.clusters["Speaker_00"] = {"centroid": centroid, "count": 4}
+    session.transcript = [
+        {
+            "start_sec": 0.0,
+            "end_sec": 5.0,
+            "speaker": "Speaker_00",
+            "speaker_label": "Speaker_00",
+            "identified_as": "Unknown",
+            "confidence": 0.0,
+            "text": "Good morning Lakshmi. Avaayu.",
+        },
+        {
+            "start_sec": 5.0,
+            "end_sec": 16.0,
+            "speaker": "Speaker_00",
+            "speaker_label": "Speaker_00",
+            "identified_as": "Unknown",
+            "confidence": 0.0,
+            "text": "I am fine. How about you?",
+        },
+    ]
+
+    session.finalize_labels()
+
+    assert session.transcript[0]["speaker"] == "Vaishnavi"
+    assert session.transcript[0]["speaker_label"] == "Speaker_00"
+    assert session.transcript[1]["speaker"] == "Lakshmi"
+    assert session.transcript[1]["speaker_label"] == "Speaker_01"

@@ -73,7 +73,17 @@ export const meetingsApi = {
 
   // The <audio> element fetches this itself, so it needs a plain URL rather
   // than an axios call.
-  audioUrl: (id) => `${API_BASE_URL}/meetings/${id}/audio`
+  audioUrl: (id) => `${API_BASE_URL}/meetings/${id}/audio`,
+
+  // Attach or replace audio on an existing meeting and restart transcription.
+  uploadAudio: (meetingId, file, onUploadProgress) => {
+    const formData = new FormData()
+    formData.append('file', file)
+    return api.post(`/meetings/${meetingId}/audio`, formData, {
+      timeout: 0,
+      onUploadProgress
+    })
+  },
 }
 
 // Speaker endpoints live at the API root, not under /api.

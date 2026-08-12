@@ -137,16 +137,16 @@ DECISION_CUES = (
     "decided to", "agreed to", "final decision", "let's go with", "lets go with",
     "we'll go with", "going with", "we will use", "we'll use", "sign off",
     "approved", "the plan is",
-    "तय किया", "तय हुआ", "फैसला", "निर्णय", "तय है",
-    "ठरवले", "ठरलं", "निर्णय घेतला", "मान्य",
+    "तय किया", "तय हुआ", "तय कर", "फैसला", "निर्णय", "तय है", "मंजूर", "स्वीकार",
+    "ठरवले", "ठरलं", "ठरव", "निर्णय घेतला", "मान्य", "निश्चित", "ठरवायचं",
 )
 
 ACTION_CUES = (
     "i will", "i'll", "we need to", "we must", "you should", "you need to",
     "action item", "follow up", "follow-up", "take care of", "let's make sure",
     "by tomorrow", "by monday", "by friday", "deadline", "assign",
-    "करना है", "करेंगे", "करना होगा", "भेज दो", "भेजना है", "जिम्मेदारी",
-    "करायचं", "करायचे", "करू", "पाठवा", "पाठवेन", "जबाबदारी",
+    "करना है", "करेंगे", "करना होगा", "कर दो", "कर दें", "भेज दो", "भेजना है", "जिम्मेदारी",
+    "करायचं", "करायचे", "करू", "पाठवा", "पाठवेन", "जबाबदारी", "पाहिजे", "करा",
 )
 
 # Removed after a real run, not theorised: "please", "can you" and "could you"
@@ -253,7 +253,7 @@ Rules:
 - Every action item and every decision MUST quote, word for word, the transcript line it came from. Copy that line exactly.
 - Report what is there. If this part genuinely contains none, return an empty list — but do not withhold a real item because it lacks an owner or a date.
 - Do not invent anything that was not said out loud. Do not guess a due date; leave it null unless a date was spoken.
-- The transcript may mix English, Hindi and Marathi. Write the summary in English; keep quotes in their original language and script.
+- The transcript may mix English, Hindi and Marathi. Write the summary in the same language as most of this part (English, Hindi, or Marathi). Keep quotes in their original language and script.
 
 Return ONLY valid JSON, no prose around it, in this exact shape:
 {{

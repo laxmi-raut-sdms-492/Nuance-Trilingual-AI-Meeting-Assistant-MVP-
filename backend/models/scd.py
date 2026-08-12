@@ -86,16 +86,34 @@ def split_on_speaker_change(audio: np.ndarray) -> list[tuple[int, int]]:
     return [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
 
 
+def _adaptive_change_threshold(distances: list[float]) -> float:
+    """
+    Per-segment threshold: a spike must exceed both the global floor and this
+    segment's own baseline variation. Prevents one speaker's volume/style shifts
+    from being treated as a speaker change.
+    """
+    if len(distances) < 3:
+        return SCD_CHANGE_THRESHOLD
+    arr = np.asarray(distances, dtype=np.float64)
+    median = float(np.median(arr))
+    mad = float(np.median(np.abs(arr - median))) + 1e-6
+    # Require a spike meaningfully above typical window-to-window drift.
+    adaptive = median + max(2.5 * mad, 0.08)
+    return max(SCD_CHANGE_THRESHOLD, adaptive)
+
+
 def _find_change_points(distances: list[float], window_starts: list[int]) -> list[int]:
-    """Local maxima in the distance sequence that clear the change threshold."""
+    """Local maxima in the distance sequence that clear the adaptive threshold."""
+    threshold = _adaptive_change_threshold(distances)
     points = []
     for i in range(1, len(distances) - 1):
         is_local_max = distances[i] > distances[i - 1] and distances[i] > distances[i + 1]
-        if is_local_max and distances[i] > SCD_CHANGE_THRESHOLD:
-            # the change happened between window i and window i+1 — split at
-            # the boundary between them (start of the next window)
+        if is_local_max and distances[i] > threshold:
             change_sample = window_starts[i + 1]
             points.append(change_sample)
+            logger.debug(
+                f"SCD change @ window {i}: dist={distances[i]:.3f} > {threshold:.3f}"
+            )
     return points
 
 

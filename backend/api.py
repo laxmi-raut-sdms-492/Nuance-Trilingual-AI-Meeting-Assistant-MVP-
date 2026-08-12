@@ -19,8 +19,9 @@ import tempfile
 import threading
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile, Request
 from fastapi.responses import FileResponse
+from starlette.responses import Response
 
 # PostgreSQL-backed persistence. Bound to the name `store` because it is a
 # drop-in replacement for the old JSON module of that name — same functions,
@@ -30,6 +31,7 @@ from fastapi.responses import FileResponse
 from db import repository as store
 from audio_utils import load_audio_file
 from config import (
+    ALLOWED_LANGUAGES,
     ALLOWED_UPLOAD_EXTENSIONS,
     LANGUAGE_NAMES,
     MAX_UPLOAD_MB,
@@ -361,11 +363,11 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
     """
     Automatically label speakers on an already-processed meeting.
 
-    1) Self-intros / mutual greetings in the transcript
-    2) Match against enrolled voice profiles
-    3) Merge same-meeting fragments (Speaker_02 ≈ already-named Anushka)
-
-    Voice enrollment for resolved names runs so future meetings stay permanent.
+    Works for any number of speakers (dynamic, not limited to 2):
+    1) Multi-pass repair of collapsed dialogue (greetings + voice splits)
+    2) Self-intros / mutual greetings
+    3) Match against enrolled voice profiles
+    4) Merge true same-meeting voice fragments (high similarity / turn-taking)
     """
     meeting = store.get_meeting(meeting_id)
     if meeting is None:
@@ -374,12 +376,166 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
     transcript = meeting.get("transcript") or []
     path = store.audio_path(meeting_id)
 
+    from models.name_hints import repair_collapsed_greeting_turns
+    from models.offline_diarizer import recluster_transcript_from_audio
     from models.speaker_enrollment import (
         identify_speakers_in_meeting,
         introduction_labels_from_transcript,
         enroll_from_meeting_audio,
         same_meeting_fragment_merges,
+        split_collapsed_lines_by_embedding,
     )
+    from pipeline import format_duration
+    from config import SPEAKER_COLORS
+
+    applied_splits = []
+    recluster_info = {"applied": False}
+
+    # --- Accurate speaker count: offline auto-k recluster (any N) ---
+    if path and len(transcript) >= 3:
+        try:
+            new_transcript, recluster_info = recluster_transcript_from_audio(
+                path, transcript
+            )
+            if recluster_info.get("applied"):
+                # Re-colour and rebuild talk-time for the new labels.
+                color_map: dict[str, str] = {}
+                for line in new_transcript:
+                    lab = line.get("speaker_label") or line.get("speaker")
+                    if lab not in color_map:
+                        color_map[lab] = SPEAKER_COLORS[
+                            len(color_map) % len(SPEAKER_COLORS)
+                        ]
+                    line["color"] = color_map[lab]
+
+                totals: dict[str, float] = {}
+                for line in new_transcript:
+                    name = line.get("speaker") or "Unknown"
+                    totals[name] = totals.get(name, 0.0) + (
+                        float(line.get("end_sec") or 0) - float(line.get("start_sec") or 0)
+                    )
+                grand = sum(totals.values()) or 1.0
+                stats = [
+                    {
+                        "name": name,
+                        "seconds": round(seconds, 1),
+                        "time": format_duration(seconds),
+                        "pct": round(seconds / grand * 100, 1),
+                        "color": color_map.get(name, SPEAKER_COLORS[0]),
+                    }
+                    for name, seconds in sorted(
+                        totals.items(), key=lambda kv: kv[1], reverse=True
+                    )
+                ]
+                significant = [
+                    s for s in stats
+                    if s["seconds"] >= 3.0 or (
+                        sum(x["seconds"] for x in stats) > 0
+                        and s["seconds"] / sum(x["seconds"] for x in stats) >= 0.02
+                    )
+                ]
+                meeting = store.update_meeting(
+                    meeting_id,
+                    transcript=new_transcript,
+                    speakerStats=stats,
+                    participants=max(len(significant), 1) if stats else 0,
+                ) or meeting
+                transcript = meeting.get("transcript") or new_transcript
+                applied_splits.append(
+                    {
+                        "source": "offline_recluster",
+                        "streaming_k": recluster_info.get("streaming_k"),
+                        "k": recluster_info.get("k"),
+                        "silhouette": recluster_info.get("silhouette"),
+                    }
+                )
+                logger.info(
+                    f"[{meeting_id}] offline recluster "
+                    f"{recluster_info.get('streaming_k')} -> {recluster_info.get('k')}"
+                )
+        except Exception:
+            logger.exception(f"[{meeting_id}] offline recluster failed")
+
+    # Multi-pass under-split repair for any N speakers.
+    # Skip embedding collapsed-split after a successful offline recluster —
+    # that pass is for under-split (too few speakers); re-running it after
+    # auto-k undoes the accurate count (3 speakers → dozens again).
+    allow_embedding_split = not recluster_info.get("applied")
+    max_passes = 5
+    for _pass in range(max_passes):
+        changed = False
+
+        greeting_fixes = repair_collapsed_greeting_turns(transcript)
+        if greeting_fixes:
+            meeting = store.reassign_transcript_lines(meeting_id, greeting_fixes) or meeting
+            transcript = meeting.get("transcript") or []
+            applied_splits.extend(greeting_fixes)
+            changed = True
+
+        if allow_embedding_split and path and len(transcript) >= 2:
+            # Split whenever consecutive same-label lines sound different —
+            # not only when the meeting still shows a single speaker.
+            has_shared_label = False
+            labels_seen: dict[str, int] = {}
+            for t in transcript:
+                lab = t.get("speaker_label") or t.get("speaker")
+                if lab:
+                    labels_seen[lab] = labels_seen.get(lab, 0) + 1
+                    if labels_seen[lab] >= 2:
+                        has_shared_label = True
+                        break
+            if has_shared_label:
+                try:
+                    named_map = {}
+                    for line in transcript:
+                        lab = line.get("speaker_label")
+                        disp = line.get("speaker")
+                        if lab and disp and not re.match(
+                            r"(?i)^speaker[_\s]?\d+$", str(disp).strip()
+                        ):
+                            named_map.setdefault(lab, disp)
+                    emb_splits = split_collapsed_lines_by_embedding(
+                        audio_path=path,
+                        transcript=transcript,
+                        named_speakers=named_map or None,
+                    )
+                    to_apply = []
+                    for split in emb_splits:
+                        if split.get("split_only"):
+                            to_apply.append(
+                                {
+                                    **split,
+                                    "new_speaker": split["old_speaker"],
+                                    "new_speaker_label": None,
+                                }
+                            )
+                        elif split.get("new_speaker") != split.get("old_speaker"):
+                            to_apply.append(
+                                {**split, "new_speaker_label": None}
+                            )
+                    if to_apply:
+                        meeting = (
+                            store.reassign_transcript_lines(meeting_id, to_apply)
+                            or meeting
+                        )
+                        transcript = meeting.get("transcript") or []
+                        applied_splits.extend(to_apply)
+                        changed = True
+                        more = repair_collapsed_greeting_turns(transcript)
+                        if more:
+                            meeting = (
+                                store.reassign_transcript_lines(meeting_id, more)
+                                or meeting
+                            )
+                            transcript = meeting.get("transcript") or []
+                            applied_splits.extend(more)
+                except Exception:
+                    logger.exception(
+                        f"[{meeting_id}] collapsed embedding split failed"
+                    )
+
+        if not changed:
+            break
 
     matches: list[dict] = []
 
@@ -400,7 +556,6 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
         except Exception:
             logger.exception(f"[{meeting_id}] voice identify-speakers failed")
 
-    # Include humans already shown on the transcript (e.g. prior rename).
     named_labels: dict[str, str] = {}
     for line in transcript:
         label = line.get("speaker_label") or line.get("speaker")
@@ -427,7 +582,7 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
         except Exception:
             logger.exception(f"[{meeting_id}] fragment merge failed")
 
-    applied = []
+    applied = list(applied_splits)
     for match in matches:
         if not match.get("matched"):
             continue
@@ -450,7 +605,6 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
             "fragment_merge",
             "fragment_merge_weak",
             "turn_taking",
-            "continuity",
         ):
             ranges = store.speaker_time_ranges(
                 meeting_id, speaker=new_name, speaker_label=match["speaker_label"]
@@ -482,12 +636,86 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
     }
 
 
-@router.get("/meetings/{meeting_id}/audio")
-def get_meeting_audio(meeting_id: str):
+@router.api_route("/meetings/{meeting_id}/audio", methods=["GET", "HEAD"])
+def get_meeting_audio(meeting_id: str, request: Request):
     path = store.audio_path(meeting_id)
     if path is None or not os.path.exists(path):
         raise HTTPException(404, "No audio stored for this meeting.")
+    if request.method == "HEAD":
+        return Response(
+            headers={
+                "Content-Length": str(os.path.getsize(path)),
+                "Accept-Ranges": "bytes",
+            }
+        )
     return FileResponse(path, filename=os.path.basename(path))
+
+
+@router.post("/meetings/{meeting_id}/audio")
+def attach_meeting_audio(
+    meeting_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
+    """
+    Attach or replace audio on an existing meeting and re-run transcription.
+
+    Used when a meeting was created without a file, or when the stored audio
+    is missing and the user wants to import one from the details page.
+    """
+    meeting = store.get_meeting(meeting_id)
+    if meeting is None:
+        raise HTTPException(404, "Meeting not found.")
+
+    extension = _extension(file.filename)
+    if extension not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            415,
+            f"Unsupported file type '{extension or 'unknown'}'. "
+            f"Accepted: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
+        )
+
+    tmp_path, size = _save_upload_to_temp(file)
+    stored_name = os.path.basename(file.filename) or f"recording{extension}"
+
+    try:
+        store.clear_meeting_audio(meeting_id)
+        store.save_audio(meeting_id, stored_name, tmp_path)
+    except Exception:
+        os.path.exists(tmp_path) and os.remove(tmp_path)
+        raise
+
+    store.update_meeting(
+        meeting_id,
+        fileName=stored_name,
+        fileType=file.content_type or "unknown",
+        fileSizeBytes=size,
+        fileSizeLabel=_format_bytes(size),
+        uploadedAtISO=store.now_iso(),
+        status="Processing",
+        progress=0,
+        error=None,
+        failedSegments=0,
+        transcript=[],
+        speakerStats=[],
+        languages=[],
+        language=None,
+        participants=None,
+        duration=None,
+        durationSeconds=None,
+        summary=None,
+        summaryEngine=None,
+        decisions=[],
+        actionItems=[],
+        keywords=[],
+        audioQualityWarning=None,
+    )
+
+    background_tasks.add_task(process_meeting, meeting_id)
+    updated = store.get_meeting(meeting_id)
+    if updated is None:
+        raise HTTPException(500, "Meeting could not be loaded after attaching audio.")
+    return updated
 
 
 @router.get("/search")
@@ -506,7 +734,19 @@ def search(q: str = Query("", min_length=0), limit: int = Query(50, ge=1, le=200
 @router.get("/languages")
 def supported_languages():
     """The three languages ASR is constrained to. Drives UI labels/filters."""
-    return {"languages": [{"code": c, "name": n} for c, n in LANGUAGE_NAMES.items()]}
+    return {
+        "languages": [
+            {"code": code, "name": LANGUAGE_NAMES[code]} for code in ALLOWED_LANGUAGES
+        ]
+    }
+
+
+@router.get("/audio-devices")
+def audio_devices():
+    """Enumerate OS audio input devices (Jabra and others) — no hardcoded index."""
+    from audio_devices import list_input_devices
+
+    return {"devices": list_input_devices()}
 
 
 # ---------------------------------------------------------------- processing
@@ -575,8 +815,27 @@ def process_meeting(meeting_id: str):
             def on_progress(fraction: float):
                 store.update_meeting(meeting_id, progress=int(fraction * 100))
 
+            def _sync_processing_state():
+                speaker_stats = session.speaker_stats()
+                languages = session.language_breakdown()
+                store.update_meeting(
+                    meeting_id,
+                    transcript=session.transcript,
+                    speakerStats=speaker_stats,
+                    participants=session.participant_count() or None,
+                    languages=languages,
+                    language=languages[0]["name"] if languages else None,
+                    durationSeconds=round(wall_clock_seconds, 1),
+                    duration=format_duration(wall_clock_seconds),
+                    audioQualityWarning=session.audio_quality_warning,
+                )
+
             logger.info(f"[{meeting_id}] transcribing {wall_clock_seconds:.1f}s of audio")
-            session.process_audio(audio, on_progress=on_progress)
+            session.process_audio(
+                audio,
+                on_progress=on_progress,
+                on_transcript_update=_sync_processing_state,
+            )
 
             # A transcript that is empty *because every segment threw* is a
             # failure, not a silent recording, and must not be reported as a
@@ -611,9 +870,10 @@ def process_meeting(meeting_id: str):
                 speakerStats=speaker_stats,
                 languages=languages,
                 language=dominant,
-                participants=len(speaker_stats),
+                participants=session.participant_count(),
                 durationSeconds=round(wall_clock_seconds, 1),
                 duration=format_duration(wall_clock_seconds),
+                audioQualityWarning=session.audio_quality_warning,
             )
             logger.info(
                 f"[{meeting_id}] transcribed — {len(session.transcript)} lines, "

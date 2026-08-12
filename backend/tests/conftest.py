@@ -123,6 +123,8 @@ def make_record(meeting_id: str = "MTG-test000000", **overrides) -> dict:
                 "language_prob": 0.98,
                 "language_detected": "en",
                 "language_fallback": False,
+                "raw_text": "Let us begin the quarterly planning meeting.",
+                "cleaned_text": "Let us begin the quarterly planning meeting.",
                 "text": "Let us begin the quarterly planning meeting.",
             },
             {
@@ -139,6 +141,8 @@ def make_record(meeting_id: str = "MTG-test000000", **overrides) -> dict:
                 "language_prob": 0.62,
                 "language_detected": "mr",
                 "language_fallback": False,
+                "raw_text": "मच्छरो मुळे तक्रारी वाढल्या आहेत.",
+                "cleaned_text": "मच्छरो मुळे तक्रारी वाढल्या आहेत.",
                 "text": "मच्छरो मुळे तक्रारी वाढल्या आहेत.",
             },
         ],

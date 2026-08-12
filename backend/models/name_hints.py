@@ -17,16 +17,24 @@ _INTRO_PATTERNS = (
     re.compile(r"\bmy\s+name\s+is\s+([A-Za-z][A-Za-z'-]{1,40})\b", re.IGNORECASE),
     re.compile(r"\bthis\s+is\s+([A-Za-z][A-Za-z'-]{1,40})\s+speaking\b", re.IGNORECASE),
     re.compile(r"मेरा\s+नाम\s+([^\s,।.!?]+)"),
-    re.compile(r"माझ[ें]\s+नाव\s+([^\s,।.!?]+)"),
+    re.compile(r"माझ[ेंं]\s+नाव\s+([^\s,।.!?]+)"),
+    re.compile(r"माझं\s+नाव\s+([^\s,।.!?]+)"),
 )
 
-# "Good morning Lakshmi" — Lakshmi is the addressee, NOT the speaker.
+# Greeting addressees — English and Devanagari (Hindi/Marathi).
+_GREETING_PREFIX = (
+    r"(?:"
+    r"good\s+morning|good\s+afternoon|good\s+evening|hello|hi|hey"
+    r"|नमस्ते|नमस्कार|सुप्रभात|शुभ\s+प्रभात|शुभ\s+सकाळ|शुभ\s+संध्याकाळ"
+    r"|हॅलो|हैलो"
+    r")"
+)
+_LATIN_NAME = r"([A-Za-z][A-Za-z'-]{1,40})"
+_DEVANAGARI_NAME = r"([\u0900-\u097F][\u0900-\u097F\-]{1,30})"
+
 _ADDRESSEE_PATTERNS = (
-    re.compile(
-        r"\b(?:good\s+morning|good\s+afternoon|good\s+evening|hello|hi|hey)"
-        r"\s+([A-Za-z][A-Za-z'-]{1,40})\b",
-        re.IGNORECASE,
-    ),
+    re.compile(rf"\b{_GREETING_PREFIX}\s+{_LATIN_NAME}\b", re.IGNORECASE),
+    re.compile(rf"{_GREETING_PREFIX}\s+{_DEVANAGARI_NAME}"),
 )
 
 
@@ -76,7 +84,9 @@ def resolve_names_from_greetings(transcript: list[dict]) -> dict[str, str]:
       Speaker_01: "Good morning Anushka…"
     → Speaker_00 = Anushka, Speaker_01 = Lakshmi
 
-    Only assigns when two diarization labels greet distinct names (swap).
+    Only assigns when two (or more) diarization labels greet distinct names
+    via pairwise name-swaps — works for dyads and larger groups that greet
+    each other.
     """
     # label -> first greeted name we saw from that label
     greeted: dict[str, str] = {}
@@ -110,3 +120,86 @@ def resolve_names_from_greetings(transcript: list[dict]) -> dict[str, str]:
                 assignment[label_a] = name_a
 
     return assignment
+
+
+def repair_collapsed_greeting_turns(transcript: list[dict]) -> list[dict]:
+    """
+    Fix under-diarization after greetings for any number of people.
+
+    Example (all lines wrongly labeled Speaker_00 / Vaishnavi):
+      Vaishnavi: "Good morning Lakshmi…"
+      Vaishnavi: "I am fine…"          → Lakshmi
+      Vaishnavi: "Good morning Priya…" → (greeter stays; pending = Priya)
+      Vaishnavi: "Hello everyone"      → Priya
+
+    Each greeting on a collapsed label can claim the next same-label reply
+    for its addressee. Works for 2, 3, or more speakers in one meeting.
+
+    Returns line reassignments:
+      [{start_sec, end_sec, old_speaker, new_speaker, speaker_label, source}]
+    """
+    lines = sorted(
+        [dict(t) for t in (transcript or [])],
+        key=lambda t: float(t.get("start_sec") or 0),
+    )
+    changes: list[dict] = []
+    # Track the latest intended display name per start_sec so chained
+    # greetings on the same collapsed label see updated speaker names.
+    renamed: dict[float, str] = {}
+
+    pending_addressee: str | None = None
+    pending_label: str | None = None
+    pending_end = -1.0
+
+    def _display(line: dict) -> str:
+        key = round(float(line.get("start_sec") or 0), 2)
+        if key in renamed:
+            return renamed[key]
+        return line.get("speaker") or line.get("speaker_label") or ""
+
+    for line in lines:
+        start = float(line.get("start_sec") or 0)
+        end = float(line.get("end_sec") or start)
+        label = line.get("speaker_label") or line.get("speaker")
+        speaker = _display(line)
+        text = line.get("text") or ""
+        greeted = extract_greeted_name(text)
+
+        if greeted:
+            # New greeting opens a turn: speaker is NOT the addressee.
+            pending_addressee = greeted
+            pending_label = label
+            pending_end = end
+            continue
+
+        if not pending_addressee or not pending_label:
+            continue
+        if label != pending_label:
+            pending_addressee = None
+            pending_label = None
+            continue
+        if start - pending_end > 20.0:
+            pending_addressee = None
+            pending_label = None
+            continue
+
+        # Same collapsed label after greeting → addressee answering.
+        if speaker and speaker.lower() != pending_addressee.lower():
+            changes.append(
+                {
+                    "start_sec": start,
+                    "end_sec": end,
+                    "old_speaker": speaker,
+                    "new_speaker": pending_addressee,
+                    "speaker_label": label,
+                    "source": "greeting_turn",
+                }
+            )
+            renamed[round(start, 2)] = pending_addressee
+            # Clear so a later greeting on this label can name the next person.
+            pending_addressee = None
+            pending_label = None
+            continue
+        pending_end = end
+
+    return changes

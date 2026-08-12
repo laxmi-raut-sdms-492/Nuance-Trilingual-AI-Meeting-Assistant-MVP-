@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react'
 import Icon from './Icon.jsx'
 import { meetingsApi } from '../../services/api.js'
+import { describeError } from '../../services/api.js'
 
 /**
  * Ported from the player in the design export (meeting_details_completed).
@@ -11,6 +12,8 @@ import { meetingsApi } from '../../services/api.js'
  */
 
 const BAR_COUNT = 48
+const ACCEPTED = ['.mp3', '.wav', '.mp4', '.m4a', '.webm', '.ogg', '.flac', '.aac']
+const MAX_UPLOAD_MB = 300
 
 function formatTime(sec) {
   if (!isFinite(sec) || sec < 0) return '0:00'
@@ -37,7 +40,6 @@ function speakerAtTime(segments, timeSec) {
     if (!isFinite(start) || !isFinite(end)) continue
     if (t >= start && t < end) return seg
   }
-  // At/after a segment end (or between gaps): nearest preceding line.
   let best = null
   for (const seg of segments) {
     const start = Number(seg.start_sec)
@@ -46,12 +48,133 @@ function speakerAtTime(segments, timeSec) {
   return best
 }
 
-export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
+function NoAudioPanel({ onImportAudio, disabled }) {
+  const inputRef = useRef(null)
+  const [dragOver, setDragOver] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [error, setError] = useState(null)
+
+  const pickFile = useCallback(
+    async (file) => {
+      if (!file || !onImportAudio || disabled) return
+      const ext = '.' + file.name.split('.').pop().toLowerCase()
+      if (!ACCEPTED.includes(ext)) {
+        setError(`Unsupported file type. Accepted: ${ACCEPTED.join(', ')}`)
+        return
+      }
+      if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+        setError(`File is over the ${MAX_UPLOAD_MB} MB limit.`)
+        return
+      }
+      setError(null)
+      setImporting(true)
+      setProgress(0)
+      try {
+        await onImportAudio(file, (event) => {
+          if (event.total) setProgress(Math.round((event.loaded / event.total) * 100))
+        })
+      } catch (err) {
+        setError(describeError(err))
+        setImporting(false)
+        setProgress(0)
+      }
+    },
+    [onImportAudio, disabled]
+  )
+
+  return (
+    <div
+      className={`rounded-xl border-2 border-dashed p-6 flex flex-col gap-4 transition-colors ${
+        dragOver
+          ? 'border-primary bg-primary/5'
+          : 'border-border bg-surface'
+      } ${disabled ? 'opacity-60 pointer-events-none' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault()
+        setDragOver(true)
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault()
+        setDragOver(false)
+        pickFile(e.dataTransfer.files?.[0])
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <Icon name="audio_file" size={22} className="text-text-muted shrink-0 mt-0.5" />
+        <div className="min-w-0">
+          <p className="font-sidebar-header text-sidebar-header text-text-primary">
+            No audio for this meeting
+          </p>
+          <p className="font-meta-data text-meta-data text-text-muted mt-1">
+            Import a recording to play it back and run transcription.
+          </p>
+        </div>
+      </div>
+
+      {importing ? (
+        <div className="flex flex-col gap-2">
+          <div className="flex justify-between font-meta-data text-meta-data text-text-muted">
+            <span>Uploading audio…</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="w-full h-2 bg-surface-container-high rounded-full overflow-hidden">
+            <div
+              className="h-full bg-primary-container progress-bar-fill rounded-full"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            className="bg-primary-container text-on-primary-container px-4 py-2 rounded-lg font-label-sm text-label-sm hover:opacity-90 transition-opacity flex items-center gap-2"
+          >
+            <Icon name="upload_file" className="text-[18px]" />
+            Import audio
+          </button>
+          <span className="font-meta-data text-meta-data text-text-faint self-center">
+            MP3, WAV, M4A, MP4
+          </span>
+        </div>
+      )}
+
+      {error && (
+        <p className="font-meta-data text-meta-data text-error flex items-center gap-1">
+          <Icon name="error" className="text-[16px]" />
+          {error}
+        </p>
+      )}
+
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ACCEPTED.join(',')}
+        className="hidden"
+        onChange={(e) => pickFile(e.target.files?.[0])}
+      />
+    </div>
+  )
+}
+
+export default function AudioPlayer({
+  meetingId,
+  fileName,
+  transcript = [],
+  onImportAudio,
+  importDisabled = false,
+  audioVersion = 0,
+}) {
   const audioRef = useRef(null)
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
   const [failed, setFailed] = useState(false)
+  const [checking, setChecking] = useState(true)
+  const [hasAudio, setHasAudio] = useState(false)
 
   const url = meetingId ? meetingsApi.audioUrl(meetingId) : null
   const heights = useMemo(() => barHeights(meetingId), [meetingId])
@@ -75,7 +198,35 @@ export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
     setPlaying(false)
     setCurrent(0)
     setDuration(0)
-  }, [meetingId])
+    setChecking(true)
+    setHasAudio(false)
+
+    if (!url) {
+      setChecking(false)
+      return
+    }
+
+    let cancelled = false
+    fetch(url, { method: 'HEAD' })
+      .then((res) => {
+        if (cancelled) return
+        setHasAudio(res.ok)
+        if (!res.ok) setFailed(true)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHasAudio(false)
+          setFailed(true)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [meetingId, url, audioVersion])
 
   const togglePlay = () => {
     const audio = audioRef.current
@@ -92,7 +243,21 @@ export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
     setCurrent(t)
   }
 
-  if (!url || failed) {
+  if (checking) {
+    return (
+      <div className="flex items-center gap-3 p-4 rounded-xl bg-surface border border-border font-meta-data text-meta-data text-text-muted">
+        <Icon name="hourglass_empty" size={18} className="animate-pulse" />
+        Checking for audio…
+      </div>
+    )
+  }
+
+  if (!url || failed || !hasAudio) {
+    if (onImportAudio) {
+      return (
+        <NoAudioPanel onImportAudio={onImportAudio} disabled={importDisabled} />
+      )
+    }
     return (
       <div className="flex items-center gap-3 p-4 rounded-xl bg-surface border border-border font-meta-data text-meta-data text-text-muted">
         <Icon name="audio_file" size={18} /> No audio available for this meeting.
@@ -105,10 +270,9 @@ export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
 
   return (
     <div className="bg-surface border border-border rounded-xl p-4 flex flex-col gap-3">
-      <div
-        className={`flex items-center gap-4 md:gap-6 ${playing ? 'playing' : ''}`}
-      >
+      <div className={`flex items-center gap-4 md:gap-6 ${playing ? 'playing' : ''}`}>
         <audio
+          key={`${meetingId}-${audioVersion}`}
           ref={audioRef}
           src={url}
           preload="metadata"
@@ -172,7 +336,6 @@ export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
         </a>
       </div>
 
-      {/* Live speaker at the playhead — updates as audio plays / seeks. */}
       <div className="flex items-center gap-2 min-h-[1.25rem] px-1">
         {active ? (
           <>
@@ -181,7 +344,10 @@ export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
               style={{ backgroundColor: active.color }}
               aria-hidden
             />
-            <span className="font-label-sm text-label-sm uppercase tracking-wide" style={{ color: active.color }}>
+            <span
+              className="font-label-sm text-label-sm uppercase tracking-wide"
+              style={{ color: active.color }}
+            >
               {active.speaker}
             </span>
             <span className="font-meta-data text-meta-data text-text-muted">
@@ -190,7 +356,9 @@ export default function AudioPlayer({ meetingId, fileName, transcript = [] }) {
           </>
         ) : (
           <span className="font-meta-data text-meta-data text-text-faint">
-            {segments.length ? 'Seek or play to see who is speaking' : 'No speaker timeline for this recording'}
+            {segments.length
+              ? 'Seek or play to see who is speaking'
+              : 'No speaker timeline for this recording'}
           </span>
         )}
       </div>

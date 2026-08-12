@@ -7,7 +7,7 @@ import os
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
 SCD_WINDOW_SECONDS = 1.5
 SCD_HOP_SECONDS = 0.5
-SCD_CHANGE_THRESHOLD = 0.35
+SCD_CHANGE_THRESHOLD = 0.28
 SCD_MIN_SEGMENT_SECONDS = 2.0
 SCD_MIN_SUBSEGMENT_SECONDS = 1.0
 SILENCE_RMS_THRESHOLD = 0.01   # below this average amplitude, treat a segment as silence
@@ -17,6 +17,17 @@ SILENCE_RMS_THRESHOLD = 0.01   # below this average amplitude, treat a segment a
 # not a fixed window — this replaces the old CHUNK_SECONDS approach.
 MAX_SEGMENT_SECONDS = 8.0      # force-cut very long uninterrupted speech so latency stays bounded
 MIN_SILENCE_MS = 400           # how long a pause must be before a segment is considered "ended"
+# When Silero finds no speech but the file is non-silent, process uploads up to
+# this length as one segment so Whisper sees full context. Longer files are
+# split into MAX_SEGMENT_SECONDS windows.
+VAD_FALLBACK_WHOLE_FILE_MAX_SECONDS = 60.0
+# Batch Silero VAD threshold used when streaming VAD finds nothing. Lower than
+# the library default (0.5) to recover speech buried under steady hum.
+VAD_BATCH_FALLBACK_THRESHOLD = 0.15
+# Uploads whose per-second RMS barely varies are usually a steady tone/hum with
+# speech drowned out — run a notch filter before VAD/Whisper.
+FLAT_TONE_RMS_STD_MAX = 0.005
+HUM_NOTCH_FREQ_HZ = 220.0
 # Discard segments shorter than this. Raised from 0.3 after a 0.7s segment
 # produced "Thank you for watching. Be safe, and I'll see you next time. Bye."
 # — a pure hallucination. Whisper's encoder always consumes exactly 30s of mel,
@@ -28,10 +39,22 @@ MIN_SPEECH_SECONDS = 1.0
 
 # --- Models ---
 EMBEDDING_MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
-WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "small")
-# tiny | base | small | medium | large — bigger = more accurate, slower.
-# `small` is the practical floor for Hindi/Marathi; `base` is noticeably worse
-# on Devanagari-script languages than it is on English.
+WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "medium")
+# tiny | base | small | medium | large — used for English transcription and
+# per-segment language detection across en/hi/mr. Hindi/Marathi decode is
+# handled by Indic Conformer when INDIC_CONFORMER_ENABLED=1.
+
+# --- Indic Conformer (Hindi + Marathi ASR, local via HuggingFace) ---
+INDIC_CONFORMER_ENABLED = os.getenv("INDIC_CONFORMER_ENABLED", "1").lower() in (
+    "1", "true", "yes"
+)
+INDIC_CONFORMER_MODEL = os.getenv(
+    "INDIC_CONFORMER_MODEL", "ai4bharat/indic-conformer-600m-multilingual"
+)
+# ctc is faster on CPU; rnnt is often slightly more accurate.
+INDIC_CONFORMER_DECODE = os.getenv("INDIC_CONFORMER_DECODE", "ctc").lower()
+WHISPER_DECODE_LANGUAGES = ["en"]
+INDIC_DECODE_LANGUAGES = ["hi", "mr"]
 
 # --- Languages (the "trilingual" part) ---
 # Whisper's raw auto-detect can return any of ~99 languages, and on a short,
@@ -58,6 +81,9 @@ DEFAULT_LANGUAGE = "en"  # used when detection is too weak to trust
 # most. Falling back is therefore usually worse than trusting a mediocre
 # detection. This threshold should only catch near-chance guesses.
 LANGUAGE_DETECT_MIN_PROB = 0.40
+# When detection is weak and there is no meeting context yet, still prefer the
+# 3-way guess over blind English if it clears this floor (below 3-way chance).
+LANGUAGE_DETECT_WEAK_FLOOR = 0.25
 
 # --- ASR quality guards ---
 #
@@ -74,6 +100,17 @@ LANGUAGE_DETECT_MIN_PROB = 0.40
 # noise without touching clean speech.
 ASR_MAX_NO_SPEECH_PROB = 0.6
 ASR_MIN_AVG_LOGPROB = -1.0
+# Passed through to Whisper before our post-decode guards run. Defaults (0.6,
+# -1.0) make Whisper return zero segments on quiet or noisy speech whose
+# no_speech_prob is high even when the decode is real — measured on a 30s
+# upload where Silero VAD also found nothing. Loosening these lets Whisper
+# attempt a decode; guards 1-4 below still drop fluent hallucinations.
+ASR_WHISPER_NO_SPEECH_THRESHOLD = 1.0
+ASR_WHISPER_LOGPROB_THRESHOLD = -2.0
+# Guard 1 skips decodes at or below this logprob — extremely uncertain output
+# is more likely quiet real speech than garbled noise (measured at -1.66 on a
+# 30s upload Silero missed entirely).
+ASR_UNCERTAIN_LOGPROB_CUTOFF = -1.5
 
 # Guard 2 — overwhelming non-speech evidence on its own.
 # The AND above misses the most damaging case: a *confident* hallucination.
@@ -98,34 +135,78 @@ ASR_MAX_WORDS_PER_SECOND = 8.0
 # quoting an English word or a number is normal and must not trip this.
 ASR_DEVANAGARI_LANGUAGES = {"hi", "mr"}
 ASR_MIN_DEVANAGARI_RATIO = 0.35
+# Pad short segments with neighbouring audio so Whisper sees sentence context.
+# Critical for Hindi/Marathi — 2s clips without context produce garbled words.
+ASR_CONTEXT_PADDING_SEC = float(os.getenv("ASR_CONTEXT_PADDING_SEC", "8.0"))
+# Wider beam search for Devanagari languages (slower but more accurate).
+ASR_BEAM_SIZE = int(os.getenv("ASR_BEAM_SIZE", "5"))
 
 # --- Diarization ---
 # Cosine distance between a new segment and a cluster's centroid.
 # 0 = identical voice, ~1 = totally different.
 DIARIZATION_DISTANCE_THRESHOLD = 0.55       # base threshold for a brand-new/young cluster
 DIARIZATION_EMA_ALPHA = 0.15                # centroid update rate — constant, doesn't freeze over a long meeting
-HYSTERESIS_BONUS = 0.05                     # discount applied to "the speaker who just spoke" to prevent flip-flopping
+HYSTERESIS_BONUS = 0.05                     # discount for the speaker who just spoke (anti flip-flop)
 THRESHOLD_GROWTH_PER_SEGMENT = 0.01         # mature clusters get a looser (more forgiving) threshold
 THRESHOLD_GROWTH_CAP = 0.15                 # ...up to this much looser
-CLUSTER_MERGE_DISTANCE = 0.40               # if two clusters' centroids end up this close, merge them
+# Evidence (tools/DIARIZATION_FINDINGS.md): 0.55 is the largest merge distance
+# safe on both over-split and correctly-split meetings. Uploads also get an
+# offline auto-k recluster pass that fixes remaining fragmentation.
+CLUSTER_MERGE_DISTANCE = float(os.getenv("CLUSTER_MERGE_DISTANCE", "0.55"))
 CLUSTER_MERGE_CHECK_EVERY = 10              # check for mergeable clusters every N segments
 
-# Reject brand-new speaker labels for short clips — a 2–3s leftover at the
-# end of a turn is almost always the same person (or a brief reply), not a
-# new participant. Prevents Speaker_02 ghosts like "So please, I am okay."
-MIN_NEW_CLUSTER_SECONDS = float(os.getenv("MIN_NEW_CLUSTER_SECONDS", "5.0"))
-
-# If two clusters in the SAME meeting are at least this similar, treat them as
-# the same person when one is already named (fixes diarization splits).
-WITHIN_MEETING_MERGE_SIMILARITY = float(
-    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.35")
+# Short clips may still be a NEW speaker (brief reply). Only force them onto
+# an existing cluster when the voice is also close enough.
+# 2.0s matches the evidenced config that hits ground truth on clean multi-party.
+MIN_NEW_CLUSTER_SECONDS = float(os.getenv("MIN_NEW_CLUSTER_SECONDS", "2.0"))
+SHORT_FORCE_MATCH_MAX_DISTANCE = float(
+    os.getenv("SHORT_FORCE_MATCH_MAX_DISTANCE", "0.55")
 )
-# Below this, embedding evidence is too weak — use turn-taking / continuity
-# instead of leaving a ghost Speaker_XX.
-SHORT_LEFTOVER_SECONDS = float(os.getenv("SHORT_LEFTOVER_SECONDS", "5.0"))
+# Rolling ECAPA samples kept per speaker cluster for profile matching.
+CLUSTER_PROFILE_MAX_SAMPLES = int(os.getenv("CLUSTER_PROFILE_MAX_SAMPLES", "24"))
+# Outlier segments assigned tentatively until this many consistent outliers appear.
+NEW_CLUSTER_EVIDENCE_COUNT = int(os.getenv("NEW_CLUSTER_EVIDENCE_COUNT", "3"))
+# Distance margin above threshold still treated as same speaker (variation, not new voice).
+NEW_CLUSTER_MARGIN = float(os.getenv("NEW_CLUSTER_MARGIN", "0.08"))
+# When only one cluster exists, dist must exceed spread * this to split.
+SINGLE_CLUSTER_SPLIT_MULTIPLIER = float(
+    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "1.8")
+)
+# Offline: collapse to 1 speaker when p90 pairwise embedding distance is below this.
+SINGLE_SPEAKER_P90_DISTANCE = float(os.getenv("SINGLE_SPEAKER_P90_DISTANCE", "0.38"))
+
+# --- Speaker turns (transcript readability) ---
+TURN_MERGE_MAX_GAP_SEC = float(os.getenv("TURN_MERGE_MAX_GAP_SEC", "2.5"))
+TURN_MAX_DURATION_SEC = float(os.getenv("TURN_MAX_DURATION_SEC", "120.0"))
+
+# --- Transcript cleanup (separate from summarization) ---
+TRANSCRIPT_CLEANUP_ENABLED = os.getenv("TRANSCRIPT_CLEANUP_ENABLED", "1").lower() in (
+    "1", "true", "yes"
+)
+TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS = int(
+    os.getenv("TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS", "120")
+)
+
+# Offline auto-k recluster (file uploads): ignore silhouette below this.
+OFFLINE_RECLUSTER_MIN_SILHOUETTE = float(
+    os.getenv("OFFLINE_RECLUSTER_MIN_SILHOUETTE", "0.18")
+)
+# When two k values score within this silhouette band, prefer the smaller k.
+OFFLINE_SILHOUETTE_TIE_EPSILON = float(
+    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.025")
+)
+
+# Same-meeting fragment repair (over-split): only merge when embeddings agree.
+WITHIN_MEETING_MERGE_SIMILARITY = float(
+    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.55")
+)
+SHORT_LEFTOVER_SECONDS = float(os.getenv("SHORT_LEFTOVER_SECONDS", "4.0"))
 INCONCLUSIVE_MERGE_SIMILARITY = float(
     os.getenv("INCONCLUSIVE_MERGE_SIMILARITY", "0.40")
 )
+# Collapsed dialogue repair (under-split): split consecutive same-label lines
+# when their embeddings differ by at least this cosine distance.
+COLLAPSED_SPLIT_DISTANCE = float(os.getenv("COLLAPSED_SPLIT_DISTANCE", "0.40"))
 
 # --- Identification ---
 # Cosine similarity (not distance) between a segment and an enrolled voice.
@@ -233,7 +314,7 @@ CORS_ORIGINS = [
     o.strip()
     for o in os.getenv(
         "CORS_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174,http://localhost:4173,http://127.0.0.1:4173",
     ).split(",")
     if o.strip()
 ]

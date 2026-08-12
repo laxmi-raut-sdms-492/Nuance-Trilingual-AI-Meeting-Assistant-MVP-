@@ -276,17 +276,20 @@ All knobs live in `backend/config.py`:
 
 | Setting | Effect |
 |---|---|
-| `WHISPER_MODEL_SIZE` | `small` is the practical floor for Hindi/Marathi; `base` is much worse on Devanagari. `medium` is better still and much slower. Also settable via env var. |
+| `WHISPER_MODEL_SIZE` | Default is `medium` (best balance for Hindi/Marathi). `small` is faster but worse on Devanagari. Override via env var. |
 | `ALLOWED_LANGUAGES` | The candidate set for per-segment detection |
 | `LANGUAGE_DETECT_MIN_PROB` | Below this, fall back to the meeting's dominant language. **Keep it low.** Chance is 0.33 (probabilities are renormalized over 3 languages). Raising it to 0.85 was measured and made results strictly worse — see below. |
 | `MAX_SEGMENT_SECONDS` | Force-cut for long uninterrupted speech — bounds latency |
 | `MIN_SILENCE_MS` | How long a pause must be before a segment is considered ended |
+| `VAD_FALLBACK_WHOLE_FILE_MAX_SECONDS` | When Silero finds no speech, uploads shorter than this are sent to Whisper as one piece instead of fixed windows |
 | `MIN_SPEECH_SECONDS` | Segments shorter than this never reach Whisper. **Don't lower below ~1.0s** — short clips are where hallucinations come from |
 | `SILENCE_RMS_THRESHOLD` | Raise if silence is transcribed as noise; lower if quiet speech is skipped |
 | `DIARIZATION_DISTANCE_THRESHOLD` | Lower = more speakers detected; higher = more merged |
 | `IDENTIFICATION_SIMILARITY_THRESHOLD` | Lower = more matches to enrolled names (more false positives); higher = stricter |
-| `ASR_MAX_NO_SPEECH_PROB` / `ASR_MIN_AVG_LOGPROB` | Hallucination guard 1 — both required together |
-| `ASR_STANDALONE_NO_SPEECH_PROB` | Guard 2 — fires alone when Whisper is near-certain there was no speech, catching *confident* hallucinations the AND above misses |
+| `ASR_MAX_NO_SPEECH_PROB` / `ASR_MIN_AVG_LOGPROB` | Hallucination guard 1 — both required together for moderate garble |
+| `ASR_WHISPER_NO_SPEECH_THRESHOLD` / `ASR_WHISPER_LOGPROB_THRESHOLD` | Passed to Whisper before our guards; loosen when quiet uploads return zero segments |
+| `ASR_UNCERTAIN_LOGPROB_CUTOFF` | Guard 1 skips decodes at or below this logprob — keeps uncertain real speech |
+| `ASR_STANDALONE_NO_SPEECH_PROB` | Guard 2 — fires when Whisper is near-certain there was no speech *and* the decode looks confident |
 | `ASR_MAX_WORDS_PER_SECOND` | Guard 3 — physically impossible speech rate. The strongest check, and it needs no model internals |
 | `ASR_MIN_DEVANAGARI_RATIO` | Guard 4 — a `hi`/`mr` decode returning Latin script failed. Kept low enough that quoting an English word or a number doesn't trip it |
 | `CORS_ORIGINS` | Allowed browser origins. Env var. Do not set to `*`. |

@@ -39,12 +39,12 @@ from config import (
     DEFAULT_LANGUAGE,
     LANGUAGE_NAMES,
 )
-from audio_utils import pcm16_bytes_to_float32, rms
+from audio_utils import pcm16_bytes_to_float32, rms, prepare_upload_audio
 from models.embedding import get_embedding
 from models.diarizer import SessionDiarizer
-from models.vad import SpeechSegmenter
+from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
-from models.asr import transcribe
+from models.asr import transcribe, transcribe_with_context
 from models.identifier import SpeakerIdentifier
 from models.name_hints import (
     extract_self_introduction_name,
@@ -100,6 +100,15 @@ class MeetingSession:
         # Running tally of which language this meeting is mostly in — used as
         # the fallback when one short segment's own detection is inconclusive.
         self._language_counts: dict[str, int] = {}
+        # Per-transcript-line ECAPA embeddings (aligned with self.transcript).
+        # Used for an offline auto-k recluster pass after the full upload.
+        self._embeddings: list = []
+        self.raw_segments: list[dict] = []  # pre-turn ASR fragments (debug)
+        self._full_audio: np.ndarray | None = None
+        self.audio_quality_warning: str | None = None
+        self._upload_profile = None
+        self._silence_threshold = SILENCE_RMS_THRESHOLD
+        self._on_transcript_update = None
 
     # -- live path --
 
@@ -111,8 +120,102 @@ class MeetingSession:
     def finish(self) -> list[dict]:
         """End of stream — drain the segment still buffered in the VAD."""
         entries = self._consume(self.segmenter.flush())
-        self.finalize_labels()
+        self._finalize_session()
         return entries
+
+    def _finalize_session(self) -> None:
+        """Offline recluster + name resolution + speaker turns — shared by live and upload."""
+        self.apply_offline_recluster()
+        self.finalize_labels()
+        self.build_and_apply_turns()
+
+    def _maybe_vad_fallback(self, audio: np.ndarray, vad_emitted: int) -> list[dict]:
+        """
+        When streaming VAD produces no usable transcript, try batch VAD and
+        fixed windows. Also runs when VAD emitted tiny false positives on a
+        flat-tone upload — a common failure mode on corrupted WAV exports.
+        """
+        if self.transcript:
+            return []
+        if len(audio) < MIN_SPEECH_SAMPLES or rms(audio) < self._silence_threshold:
+            return []
+
+        profile = self._upload_profile
+        fb_kwargs: dict = {}
+        if profile:
+            fb_kwargs["batch_vad_threshold"] = profile.batch_vad_threshold
+            fb_kwargs["batch_vad_min_speech_ratio"] = profile.batch_vad_min_speech_ratio
+        segments = fallback_segments(audio, **fb_kwargs)
+        if not segments:
+            return []
+
+        logger.warning(
+            f"[{self.session_id}] streaming VAD emitted {vad_emitted} segment(s) "
+            f"but produced no transcript — falling back to {len(segments)} segment(s)"
+        )
+        return self._consume(segments)
+
+    def apply_offline_recluster(self) -> dict:
+        """
+        Second-pass diarization once the full meeting is in memory.
+
+        Streaming labels are good enough live; file uploads over-split. Offline
+        agglomerative + silhouette picks the real speaker count dynamically.
+        """
+        from models.offline_diarizer import recluster_from_embeddings
+
+        if not self.transcript or not self._embeddings:
+            return {"applied": False, "reason": "no_data"}
+        if len(self._embeddings) != len(self.transcript):
+            logger.warning(
+                f"[{self.session_id}] embedding/transcript length mismatch "
+                f"{len(self._embeddings)}/{len(self.transcript)} — skip recluster"
+            )
+            return {"applied": False, "reason": "length_mismatch"}
+
+        k_max = self._upload_profile.k_max if self._upload_profile else 12
+        new_transcript, info = recluster_from_embeddings(
+            self.transcript, self._embeddings, k_max=k_max
+        )
+        if info.get("applied"):
+            self.transcript = new_transcript
+            self._rebuild_diarizer_from_embeddings()
+            # Colours must follow the new labels.
+            self._speaker_colors = {}
+            for entry in self.transcript:
+                entry["color"] = self._color_for(entry["speaker_label"])
+            logger.info(
+                f"[{self.session_id}] offline recluster: "
+                f"{info.get('streaming_k')} -> {info.get('k')} speakers "
+                f"(silhouette={info.get('silhouette')})"
+            )
+        return info
+
+    def _rebuild_diarizer_from_embeddings(self) -> None:
+        """Replace streaming clusters with centroids of the offline labels."""
+        self.diarizer = SessionDiarizer()
+        by_label: dict[str, list] = {}
+        for entry, emb in zip(self.transcript, self._embeddings):
+            label = entry.get("speaker_label") or entry.get("speaker")
+            if not label:
+                continue
+            by_label.setdefault(label, []).append(np.asarray(emb, dtype=np.float32))
+
+        max_id = -1
+        for label, embs in by_label.items():
+            stacked = np.stack(embs)
+            centroid = stacked.mean(axis=0)
+            norm = float(np.linalg.norm(centroid)) + 1e-9
+            centroid = centroid / norm
+            self.diarizer.clusters[label] = {
+                "centroid": centroid.astype(np.float32),
+                "count": len(embs),
+                "embeddings": [e.copy() for e in embs[-24:]],
+            }
+            m = re.match(r"(?i)^speaker[_\s]?(\d+)$", str(label).strip())
+            if m:
+                max_id = max(max_id, int(m.group(1)))
+        self.diarizer._next_label_id = max_id + 1
 
     def finalize_labels(self) -> None:
         """
@@ -261,25 +364,120 @@ class MeetingSession:
                     entry["identified_as"] = UNKNOWN
                     entry["speaker"] = label
 
+        # Under-split repair: greeting reply glued onto the greeter
+        # (e.g. both lines labeled Vaishnavi; second is Lakshmi answering).
+        from models.name_hints import repair_collapsed_greeting_turns
+
+        greeting_fixes = repair_collapsed_greeting_turns(self.transcript)
+        if greeting_fixes:
+            used_ids: set[int] = set()
+            for entry in self.transcript:
+                m = re.match(
+                    r"(?i)^speaker[_\s]?(\d+)$",
+                    str(entry.get("speaker_label") or "").strip(),
+                )
+                if m:
+                    used_ids.add(int(m.group(1)))
+            next_id = (max(used_ids) + 1) if used_ids else 0
+            by_start = {
+                round(float(c["start_sec"]), 2): c for c in greeting_fixes
+            }
+            for entry in self.transcript:
+                key = round(float(entry.get("start_sec") or 0), 2)
+                change = by_start.get(key)
+                if not change:
+                    continue
+                new_name = change["new_speaker"]
+                new_label = f"Speaker_{next_id:02d}"
+                next_id += 1
+                entry["speaker"] = new_name
+                entry["identified_as"] = new_name
+                entry["speaker_label"] = new_label
+                entry["confidence"] = 1.0
+                logger.info(
+                    f"greeting_turn: line @{key:.2f}s -> {new_name} ({new_label})"
+                )
+
+    def build_and_apply_turns(self) -> None:
+        """
+        Merge fragmented ASR segments into readable speaker turns.
+        Preserves raw_segments for debugging; transcript becomes turns for UI.
+        """
+        if not self.transcript:
+            return
+
+        from config import TRANSCRIPT_CLEANUP_ENABLED
+        from models.speaker_turns import build_speaker_turns
+        from models.transcript_cleanup import cleanup_turns
+
+        # Snapshot raw ASR fragments before merging.
+        self.raw_segments = [
+            {**entry, "raw_text": entry.get("raw_text") or entry.get("text", "")}
+            for entry in self.transcript
+        ]
+
+        turns = build_speaker_turns(self.raw_segments)
+        if TRANSCRIPT_CLEANUP_ENABLED:
+            turns = cleanup_turns(turns, use_llm=True)
+        else:
+            from models.transcript_cleanup import cleanup_turns as _ct
+            turns = _ct(turns, use_llm=False)
+
+        logger.info(
+            f"[{self.session_id}] speaker turns: "
+            f"{len(self.raw_segments)} segment(s) -> {len(turns)} turn(s)"
+        )
+        self.transcript = turns
+
     # -- upload path --
 
-    def process_audio(self, audio: np.ndarray, on_progress=None) -> list[dict]:
+    def process_audio(
+        self,
+        audio: np.ndarray,
+        on_progress=None,
+        on_transcript_update=None,
+    ) -> list[dict]:
         """
         Run a complete, already-decoded recording through the same pipeline.
 
         audio: 1-D float32, 16kHz mono (see audio_utils.load_audio_file).
         on_progress: optional callback(fraction_0_to_1) for status reporting.
+        on_transcript_update: optional callback() after each new transcript line.
         """
+        audio, profile = prepare_upload_audio(audio)
+        self._full_audio = audio
+        self._upload_profile = profile
+        self._silence_threshold = profile.silence_rms_threshold
+        self.audio_quality_warning = profile.warning
+        self._on_transcript_update = on_transcript_update
+        if profile.warning:
+            logger.warning(f"[{self.session_id}] {profile.warning}")
+        self.segmenter = SpeechSegmenter(
+            min_silence_ms=profile.min_silence_ms,
+            threshold=profile.vad_threshold,
+        )
+        logger.info(
+            f"[{self.session_id}] upload profile: vad={profile.vad_threshold:.2f}, "
+            f"silence_rms={profile.silence_rms_threshold:.4f}, k_max={profile.k_max}"
+        )
+
         total = max(len(audio), 1)
         entries = []
+        vad_emitted = 0
 
         for offset in range(0, len(audio), FILE_BLOCK_SAMPLES):
             block = audio[offset : offset + FILE_BLOCK_SAMPLES]
-            entries.extend(self._consume(self.segmenter.process(block)))
+            segs = self.segmenter.process(block)
+            vad_emitted += len(segs)
+            entries.extend(self._consume(segs))
             if on_progress:
                 on_progress(min((offset + len(block)) / total, 0.99))
 
-        entries.extend(self.finish())
+        flush_segs = self.segmenter.flush()
+        vad_emitted += len(flush_segs)
+        entries.extend(self._consume(flush_segs))
+        entries.extend(self._maybe_vad_fallback(audio, vad_emitted))
+        self._finalize_session()
         if on_progress:
             on_progress(1.0)
         return entries
@@ -327,7 +525,7 @@ class MeetingSession:
         return new_entries
 
     def _process_subsegment(self, start: float, end: float, audio) -> dict | None:
-        if len(audio) < MIN_SPEECH_SAMPLES or rms(audio) < SILENCE_RMS_THRESHOLD:
+        if len(audio) < MIN_SPEECH_SAMPLES or rms(audio) < self._silence_threshold:
             return None  # too short or too quiet to be meaningful speech
 
         embedding = get_embedding(audio)
@@ -336,7 +534,12 @@ class MeetingSession:
         stable_embedding = self.diarizer.get_centroid(speaker_label)
         identified_as, confidence = self.identifier.identify(stable_embedding)
 
-        asr = transcribe(audio, hint_language=self.dominant_language)
+        if self._full_audio is not None:
+            asr = transcribe_with_context(
+                self._full_audio, start, end, hint_language=self.dominant_language
+            )
+        else:
+            asr = transcribe(audio, hint_language=self.dominant_language)
         if not asr["text"]:
             return None
 
@@ -359,6 +562,7 @@ class MeetingSession:
                     logger.warning(f"[{start:.1f}s] auto-enroll '{hint}' failed: {exc}")
 
         display_name = identified_as if identified_as != UNKNOWN else speaker_label
+        raw_text = asr["text"]
         entry = {
             "start_sec": round(start, 2),
             "end_sec": round(end, 2),
@@ -373,9 +577,21 @@ class MeetingSession:
             "language_prob": asr["language_prob"],
             "language_detected": asr["language_detected"],
             "language_fallback": asr["language_fallback"],
-            "text": asr["text"],
+            "raw_text": raw_text,
+            "text": raw_text,
+            "is_turn": False,
         }
         self.transcript.append(entry)
+        # Keep the raw segment embedding (not the cluster centroid) so the
+        # offline recluster pass sees each line's own voice fingerprint.
+        self._embeddings.append(np.asarray(embedding, dtype=np.float32).copy())
+        if self._on_transcript_update:
+            try:
+                self._on_transcript_update()
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.session_id}] transcript update callback failed: {exc}"
+                )
         return entry
 
     def _color_for(self, speaker_label: str) -> str:
@@ -396,27 +612,52 @@ class MeetingSession:
         """
         Talk time per speaker, shaped for the details page's bars and the
         dashboard pie: {name, seconds, time, pct, color}.
+
+        Groups by speaker_label (stable diarization id), not display name,
+        so one person is never counted twice after label repair.
         """
         totals: dict[str, float] = {}
+        labels: dict[str, str] = {}  # label -> display name
+        colors: dict[str, str] = {}
         for entry in self.transcript:
-            key = entry["speaker"]
-            totals[key] = totals.get(key, 0.0) + (entry["end_sec"] - entry["start_sec"])
+            label = entry.get("speaker_label") or entry.get("speaker") or "Unknown"
+            display = entry.get("speaker") or label
+            labels[label] = display
+            colors[label] = entry.get("color") or SPEAKER_COLORS[0]
+            totals[label] = totals.get(label, 0.0) + (
+                entry["end_sec"] - entry["start_sec"]
+            )
 
         grand_total = sum(totals.values())
         if grand_total <= 0:
             return []
 
-        colors = {e["speaker"]: e["color"] for e in self.transcript}
         return [
             {
-                "name": name,
+                "name": labels.get(label, label),
+                "speaker_label": label,
                 "seconds": round(seconds, 1),
                 "time": format_duration(seconds),
                 "pct": round(seconds / grand_total * 100, 1),
-                "color": colors.get(name, SPEAKER_COLORS[0]),
+                "color": colors.get(label, SPEAKER_COLORS[0]),
             }
-            for name, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+            for label, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
         ]
+
+    def participant_count(self) -> int:
+        """
+        Dynamic speaker count — ignore tiny fragment clusters (< 3s or < 2%
+        talk time) that are usually false splits from one voice.
+        """
+        stats = self.speaker_stats()
+        if not stats:
+            return 0
+        total = sum(s["seconds"] for s in stats)
+        significant = [
+            s for s in stats
+            if s["seconds"] >= 3.0 or (total > 0 and s["seconds"] / total >= 0.02)
+        ]
+        return max(len(significant), 1) if stats else 0
 
     def language_breakdown(self) -> list[dict]:
         """Which of the three languages this meeting was actually spoken in."""
@@ -447,6 +688,7 @@ class MeetingSession:
         return {
             "session_id": self.session_id,
             "transcript": self.transcript,
+            "raw_segments": self.raw_segments,
             "speaker_stats": self.speaker_stats(),
             "languages": self.language_breakdown(),
             "speaking_time_seconds": {s["name"]: s["seconds"] for s in self.speaker_stats()},

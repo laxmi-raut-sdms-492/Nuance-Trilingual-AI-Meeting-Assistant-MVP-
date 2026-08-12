@@ -254,13 +254,15 @@ def same_meeting_fragment_merges(
 ) -> list[dict]:
     """
     Attach leftover Speaker_XX labels to a human name already used in this
-    meeting.
+    meeting (any number of speakers).
 
     1) Embedding similarity to a named cluster (when audio is available)
-    2) Turn-taking fallback for short inconclusive leftovers: after Lakshmi
-       speaks, a brief Speaker_02 is treated as the other known person
-       (Anushka) in a two-person meeting — embeddings on 2–3s clips are often
-       useless (~0.27 to everyone).
+    2) Turn-taking: short leftover after speaker A → best match among the
+       other named voices (not limited to 2-person meetings)
+    3) No-audio fallback only when exactly two humans are known (safe guess)
+
+    Continuity-into-previous is intentionally NOT used — that re-created the
+    under-split bug (Lakshmi's reply glued onto Vaishnavi).
     """
     from config import (
         WITHIN_MEETING_MERGE_SIMILARITY,
@@ -277,7 +279,6 @@ def same_meeting_fragment_merges(
 
     by_label: dict[str, list[tuple[float, float]]] = {}
     display_by_label: dict[str, str] = {}
-    # Chronological previous human display name before each label's first line.
     previous_human: dict[str, str] = {}
     last_human: str | None = None
     for line in sorted(transcript, key=lambda t: float(t.get("start_sec") or 0)):
@@ -337,33 +338,44 @@ def same_meeting_fragment_merges(
         if best_name and best_sim >= WITHIN_MEETING_MERGE_SIMILARITY:
             chosen, confidence = best_name, best_sim
         elif durations.get(label, 0) <= SHORT_LEFTOVER_SECONDS:
-            # Embedding inconclusive on a short leftover — use dialogue structure.
             prev = previous_human.get(label)
-            if (
-                best_name
-                and best_sim >= 0.20
-                and best_sim >= second_sim + 0.05
-            ):
+            if best_name and best_sim >= 0.45 and best_sim >= second_sim + 0.08:
                 chosen, confidence = best_name, best_sim
                 source = "fragment_merge_weak"
-            elif len(human_names) == 2 and prev:
-                # Two known people: a brief new label after A is usually B.
-                other = next((n for n in human_names if n.lower() != prev.lower()), None)
+            elif prev and label in centroids and named_centroids:
+                # Turn change among N speakers: prefer best match among voices
+                # other than whoever just spoke.
+                prev_sim = -1.0
+                best_other, best_other_sim = None, -1.0
+                for other, centroid in named_centroids.items():
+                    name = named_labels[other]
+                    sim = cosine_similarity(centroids[label], centroid)
+                    if name.lower() == prev.lower():
+                        prev_sim = sim
+                        continue
+                    if sim > best_other_sim:
+                        best_other, best_other_sim = name, sim
+                if best_other and best_other_sim >= INCONCLUSIVE_MERGE_SIMILARITY:
+                    if prev_sim < 0 or best_other_sim >= prev_sim + 0.03:
+                        chosen, confidence = best_other, best_other_sim
+                        source = "turn_taking"
+                        logger.info(
+                            f"turn-taking merge: {label} -> {best_other} "
+                            f"(after {prev}, sim={best_other_sim:.3f}, "
+                            f"n={len(human_names)} speakers)"
+                        )
+            elif len(human_names) == 2 and prev and not named_centroids:
+                # No audio embeddings — only safe when exactly two humans.
+                other = next(
+                    (n for n in human_names if n.lower() != prev.lower()), None
+                )
                 if other:
                     chosen, confidence = other, max(best_sim, 0.0)
                     source = "turn_taking"
                     logger.info(
                         f"turn-taking merge: {label} -> {other} "
-                        f"(after {prev}, short {durations.get(label, 0):.1f}s, "
-                        f"best_emb={best_sim:.3f})"
+                        f"(after {prev}, short {durations.get(label, 0):.1f}s, no audio)"
                     )
-            elif prev and (best_sim < INCONCLUSIVE_MERGE_SIMILARITY or best_name is None):
-                chosen, confidence = prev, max(best_sim, 0.0)
-                source = "continuity"
-                logger.info(
-                    f"continuity merge: {label} -> {prev} "
-                    f"(short {durations.get(label, 0):.1f}s leftover)"
-                )
 
         if chosen:
             results.append(
@@ -377,3 +389,124 @@ def same_meeting_fragment_merges(
                 }
             )
     return results
+
+
+def split_collapsed_lines_by_embedding(
+    *,
+    audio_path: str,
+    transcript: list[dict],
+    named_speakers: dict[str, str] | None = None,
+) -> list[dict]:
+    """
+    When consecutive transcript lines share one speaker_label but their voice
+    embeddings differ a lot, split the later line onto a new diarization label.
+
+    Works for any number of speakers — not limited to 1→2 person meetings.
+    If other named voices already exist in the meeting, try to assign the
+    split line to the closest named speaker (so a 3rd person is labeled, not
+    left as a duplicate of speaker A).
+    """
+    from config import COLLAPSED_SPLIT_DISTANCE, WITHIN_MEETING_MERGE_SIMILARITY
+    from models.speaker_matcher import cosine_similarity
+    from scipy.spatial.distance import cosine as cosine_distance
+
+    def _is_generic(name: str) -> bool:
+        return bool(re.match(r"(?i)^speaker[_\s]?\d+$", str(name or "").strip()))
+
+    lines = sorted(
+        transcript or [],
+        key=lambda t: float(t.get("start_sec") or 0),
+    )
+    if len(lines) < 2:
+        return []
+
+    audio = load_audio_file(audio_path)
+
+    # Build centroids for every human name already on the transcript.
+    by_name: dict[str, list[tuple[float, float]]] = {}
+    for line in lines:
+        name = line.get("speaker") or ""
+        if not name or _is_generic(name):
+            continue
+        by_name.setdefault(name, []).append(
+            (float(line.get("start_sec") or 0), float(line.get("end_sec") or 0))
+        )
+    if named_speakers:
+        for label, name in named_speakers.items():
+            if name and not _is_generic(name) and name not in by_name:
+                by_name.setdefault(name, [])
+
+    named_centroids: dict[str, np.ndarray] = {}
+    for name, segs in by_name.items():
+        if not segs:
+            continue
+        emb = embedding_from_segments(audio, segs)
+        if emb is not None:
+            named_centroids[name] = emb
+
+    changes: list[dict] = []
+    prev_emb = None
+    prev_label = None
+    prev_speaker = None
+
+    for line in lines:
+        start = float(line.get("start_sec") or 0)
+        end = float(line.get("end_sec") or start)
+        label = line.get("speaker_label") or line.get("speaker")
+        speaker = line.get("speaker") or label
+        emb = embedding_from_segments(audio, [(start, end)])
+        if emb is None:
+            prev_emb = None
+            prev_label = label
+            prev_speaker = speaker
+            continue
+
+        if (
+            prev_emb is not None
+            and label == prev_label
+            and speaker == prev_speaker
+        ):
+            dist = float(cosine_distance(prev_emb, emb))
+            if dist >= COLLAPSED_SPLIT_DISTANCE:
+                new_speaker = speaker
+                split_only = True
+                confidence = round(dist, 3)
+                # Prefer a different known voice in this meeting when close enough.
+                best_name, best_sim = None, -1.0
+                for name, centroid in named_centroids.items():
+                    if name.lower() == str(speaker).lower():
+                        continue
+                    sim = cosine_similarity(emb, centroid)
+                    if sim > best_sim:
+                        best_name, best_sim = name, sim
+                if best_name and best_sim >= WITHIN_MEETING_MERGE_SIMILARITY:
+                    new_speaker = best_name
+                    split_only = False
+                    confidence = round(float(best_sim), 3)
+                logger.info(
+                    f"collapsed-split: line @{start:.1f}s voice dist={dist:.3f} "
+                    f">= {COLLAPSED_SPLIT_DISTANCE} — "
+                    f"{'-> ' + new_speaker if not split_only else 'new speaker turn'}"
+                )
+                changes.append(
+                    {
+                        "start_sec": start,
+                        "end_sec": end,
+                        "old_speaker": speaker,
+                        "new_speaker": new_speaker,
+                        "speaker_label": label,
+                        "confidence": confidence,
+                        "source": "collapsed_split",
+                        "split_only": split_only,
+                    }
+                )
+                # Treat this line as the new speaker for the next comparison.
+                prev_emb = emb
+                prev_label = label
+                prev_speaker = new_speaker
+                continue
+        prev_emb = emb
+        prev_label = label
+        prev_speaker = speaker
+
+    return changes

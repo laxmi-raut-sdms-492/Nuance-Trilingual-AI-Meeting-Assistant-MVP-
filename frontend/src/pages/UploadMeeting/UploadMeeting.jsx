@@ -5,6 +5,7 @@ import Icon from '../../components/common/Icon.jsx'
 import AudioRecorder from '../../components/common/AudioRecorder.jsx'
 import { useMeetings } from '../../context/MeetingsContext.jsx'
 import { describeError } from '../../services/api.js'
+import { SUPPORTED_LANGUAGE_NAMES } from '../../constants/languages.js'
 
 /**
  * Ported from the design export (create_meeting_details),
@@ -256,6 +257,19 @@ export default function UploadMeeting() {
                 <Icon name="arrow_back" className="text-lg" />
                 <span className="font-meta-data text-meta-data">Back to details</span>
               </button>
+
+              <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex gap-3">
+                <Icon name="translate" className="text-primary shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-label-sm text-label-sm text-text-primary">
+                    Trilingual transcription
+                  </p>
+                  <p className="font-meta-data text-meta-data text-text-muted mt-1">
+                    Speech is detected and transcribed automatically in {SUPPORTED_LANGUAGE_NAMES}.
+                    Speakers can code-switch freely within one meeting.
+                  </p>
+                </div>
+              </div>
 
               <div className="flex p-1 bg-surface-container rounded-lg w-fit border border-border">
                 {[

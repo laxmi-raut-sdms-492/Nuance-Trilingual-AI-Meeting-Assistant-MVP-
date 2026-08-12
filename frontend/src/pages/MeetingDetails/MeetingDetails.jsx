@@ -32,6 +32,49 @@ function isGenericSpeaker(name) {
   return /^speaker[_\s]?\d+$/i.test(String(name || '').trim())
 }
 
+/** True when a greeting names someone else but a later same-speaker line may be that person. */
+function needsCollapsedGreetingRepair(transcript) {
+  if (!transcript?.length) return false
+  const greet =
+    /(?:good\s+(?:morning|afternoon|evening)|hello|hi|namaste)\s+([A-Za-z][A-Za-z'-]+)/i
+  const sorted = [...transcript].sort(
+    (a, b) => (a.start_sec || 0) - (b.start_sec || 0),
+  )
+  const addressees = new Set()
+  for (let i = 0; i < sorted.length; i++) {
+    const match = String(sorted[i].text || '').match(greet)
+    if (!match) continue
+    const addressee = match[1]
+    addressees.add(addressee.toLowerCase())
+    const cur = sorted[i]
+    for (let j = i + 1; j < sorted.length; j++) {
+      const next = sorted[j]
+      const gap = (next.start_sec || 0) - (cur.end_sec || cur.start_sec || 0)
+      if (gap > 20) break
+      const sameLabel =
+        (next.speaker_label || next.speaker) === (cur.speaker_label || cur.speaker)
+      const sameName =
+        String(next.speaker || '').toLowerCase() === String(cur.speaker || '').toLowerCase()
+      if (
+        (sameLabel || sameName) &&
+        next.speaker &&
+        String(next.speaker).toLowerCase() !== addressee.toLowerCase()
+      ) {
+        return true
+      }
+    }
+  }
+  // Also repair when greetings mention people who never appear as speakers.
+  if (addressees.size === 0) return false
+  const speakerNames = new Set(
+    sorted.map((t) => String(t.speaker || '').toLowerCase()).filter(Boolean),
+  )
+  for (const name of addressees) {
+    if (!speakerNames.has(name)) return true
+  }
+  return false
+}
+
 function MetaChip({ icon, children }) {
   return (
     <div className="flex items-center gap-1.5 bg-surface border border-border px-2.5 py-1 rounded-md">
@@ -236,6 +279,8 @@ export default function MeetingDetails() {
   const [activeTab, setActiveTab] = useState('Transcript')
   const [search, setSearch] = useState('')
   const [enrolledSpeakers, setEnrolledSpeakers] = useState([])
+  const [audioVersion, setAudioVersion] = useState(0)
+  const [showRawAsr, setShowRawAsr] = useState(false)
   const autoLabeledRef = useRef(false)
 
   const load = useCallback(async () => {
@@ -274,14 +319,27 @@ export default function MeetingDetails() {
     return () => clearInterval(timer)
   }, [meeting?.status, load])
 
-  // Quietly auto-label Speaker_XX from enrolled voices / greetings / fragments.
-  // Re-runs when generic labels remain (e.g. Speaker_02 after Anushka was named).
+  const handleImportAudio = useCallback(
+    async (file, onUploadProgress) => {
+      const { data } = await meetingsApi.uploadAudio(id, file, onUploadProgress)
+      setMeeting(data)
+      setAudioVersion((v) => v + 1)
+      toast.success('Audio imported. Transcription is running.')
+      return data
+    },
+    [id]
+  )
+
+  // Quietly auto-label Speaker_XX and repair collapsed greetings
+  // (e.g. both lines named Vaishnavi when Lakshmi answered).
   useEffect(() => {
     if (!meeting || meeting.status !== 'Completed') return
     const hasGeneric =
       (meeting.speakerStats || []).some((s) => isGenericSpeaker(s.name)) ||
       (meeting.transcript || []).some((t) => isGenericSpeaker(t.speaker))
-    if (!hasGeneric) {
+    const needsRepair =
+      hasGeneric || needsCollapsedGreetingRepair(meeting.transcript)
+    if (!needsRepair) {
       autoLabeledRef.current = false
       return
     }
@@ -324,7 +382,10 @@ export default function MeetingDetails() {
   const pill = STATUS_PILL[meeting.status] || STATUS_PILL.Completed
   const hasTranscript = meeting.transcript?.length > 0
   const filteredTranscript = hasTranscript
-    ? meeting.transcript.filter((t) => t.text.toLowerCase().includes(search.toLowerCase()))
+    ? meeting.transcript.filter((t) => {
+        const hay = `${t.text || ''} ${t.raw_text || ''}`.toLowerCase()
+        return hay.includes(search.toLowerCase())
+      })
     : []
 
   return (
@@ -352,9 +413,21 @@ export default function MeetingDetails() {
               <MetaChip icon="calendar_today">{meeting.date}</MetaChip>
               <MetaChip icon="schedule">{meeting.duration || meeting.time}</MetaChip>
               {(() => {
+                const stats = meeting.speakerStats || []
+                const totalSec = stats.reduce((n, s) => n + (s.seconds || 0), 0)
+                const significant = stats.filter(
+                  (s) =>
+                    (s.seconds || 0) >= 3 ||
+                    (totalSec > 0 && (s.seconds || 0) / totalSec >= 0.02),
+                )
+                const labelSet = new Set(
+                  (meeting.transcript || [])
+                    .map((t) => t.speaker_label || t.speaker)
+                    .filter(Boolean),
+                )
                 const speakerCount =
-                  meeting.speakerStats?.length ||
-                  new Set((meeting.transcript || []).map((t) => t.speaker).filter(Boolean)).size ||
+                  significant.length ||
+                  labelSet.size ||
                   meeting.participants ||
                   0
                 return speakerCount > 0 ? (
@@ -396,6 +469,9 @@ export default function MeetingDetails() {
         meetingId={meeting.id}
         fileName={meeting.fileName}
         transcript={meeting.transcript || []}
+        onImportAudio={handleImportAudio}
+        importDisabled={processing}
+        audioVersion={audioVersion}
       />
 
       {processing && (
@@ -407,6 +483,15 @@ export default function MeetingDetails() {
           <p className="font-meta-data text-meta-data text-text-muted">
             Detecting speech, separating speakers, and transcribing each segment in English, Hindi,
             or Marathi. This page updates itself as it goes.
+            {hasTranscript && (
+              <>
+                {' '}
+                <span className="text-processing">
+                  {meeting.transcript.length} line
+                  {meeting.transcript.length === 1 ? '' : 's'} so far.
+                </span>
+              </>
+            )}
           </p>
           <div className="w-full h-2 bg-surface-container-high rounded-full overflow-hidden mt-4">
             <div
@@ -416,6 +501,20 @@ export default function MeetingDetails() {
           </div>
           <p className="font-meta-data text-meta-data text-processing mt-1.5">
             {meeting.progress || 0}%
+          </p>
+        </div>
+      )}
+
+      {meeting.audioQualityWarning && (
+        <div className="bg-processing/10 border border-processing/30 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-1">
+            <Icon name="warning" className="text-processing" />
+            <p className="font-sidebar-header text-sidebar-header text-text-primary">
+              Audio quality notice
+            </p>
+          </div>
+          <p className="font-meta-data text-meta-data text-text-muted">
+            {meeting.audioQualityWarning}
           </p>
         </div>
       )}
@@ -459,18 +558,31 @@ export default function MeetingDetails() {
             {activeTab === 'Transcript' && (
               <>
                 {hasTranscript && (
-                  <div className="relative max-w-xs">
-                    <Icon
-                      name="search"
-                      size={16}
-                      className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
-                    />
-                    <input
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      placeholder="Search transcript..."
-                      className="input-base w-full pl-9 pr-3 py-2 rounded-lg border font-meta-data text-meta-data placeholder:text-text-faint"
-                    />
+                  <div className="flex flex-wrap items-center gap-4">
+                    <div className="relative max-w-xs flex-1 min-w-[200px]">
+                      <Icon
+                        name="search"
+                        size={16}
+                        className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted pointer-events-none"
+                      />
+                      <input
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        placeholder="Search transcript..."
+                        className="input-base w-full pl-9 pr-3 py-2 rounded-lg border font-meta-data text-meta-data placeholder:text-text-faint"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowRawAsr((v) => !v)}
+                      className={`px-3 py-2 rounded-lg border font-meta-data text-meta-data transition-colors ${
+                        showRawAsr
+                          ? 'border-primary-container text-primary bg-primary/5'
+                          : 'border-border text-text-muted hover:text-text-primary'
+                      }`}
+                    >
+                      {showRawAsr ? 'Hide raw ASR' : 'Show raw ASR'}
+                    </button>
                   </div>
                 )}
 
@@ -536,6 +648,14 @@ export default function MeetingDetails() {
                                   {t.language_fallback ? '?' : ''}
                                 </span>
                               )}
+                              {t.language_mix && t.language_mix.length > 1 && (
+                                <span
+                                  title={`Mixed: ${t.language_mix.join(', ')}`}
+                                  className="px-1.5 py-0.5 border border-border rounded text-[10px] text-text-muted ml-1"
+                                >
+                                  MIX
+                                </span>
+                              )}
                             </div>
                             <p
                               lang={t.language}
@@ -545,8 +665,13 @@ export default function MeetingDetails() {
                                   : 'font-transcript-body text-transcript-body'
                               }`}
                             >
-                              {t.text}
+                              {showRawAsr && t.raw_text ? t.raw_text : (t.cleaned_text || t.text)}
                             </p>
+                            {showRawAsr && t.raw_text && t.cleaned_text && t.raw_text !== t.cleaned_text && (
+                              <p className="mt-2 font-meta-data text-meta-data text-text-faint border-l-2 border-border pl-3">
+                                Cleaned: {t.cleaned_text}
+                              </p>
+                            )}
                           </div>
                         </div>
                       )

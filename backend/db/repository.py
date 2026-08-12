@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import re
 import shutil
 
 from sqlalchemy import delete, func, inspect, select
@@ -49,6 +50,7 @@ _MEETING_FIELDS = {
     "status": "status",
     "progress": "progress",
     "error": "error",
+    "audioQualityWarning": "audio_quality_warning",
     "failedSegments": "failed_segments",
     "duration": "duration",
     "durationSeconds": "duration_seconds",
@@ -73,6 +75,7 @@ def _to_dict(meeting: Meeting) -> dict:
         "status": meeting.status,
         "progress": meeting.progress,
         "error": meeting.error,
+        "audioQualityWarning": meeting.audio_quality_warning,
         "failedSegments": meeting.failed_segments,
         "duration": meeting.duration,
         "durationSeconds": meeting.duration_seconds,
@@ -109,7 +112,9 @@ def _to_dict(meeting: Meeting) -> dict:
                 "language_prob": t.language_prob,
                 "language_detected": t.language_detected,
                 "language_fallback": t.language_fallback,
-                "text": t.text,
+                "raw_text": t.raw_text,
+                "cleaned_text": t.cleaned_text,
+                "text": t.cleaned_text or t.text,
             }
             for t in meeting.transcript_lines
         ],
@@ -195,7 +200,9 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 language_prob=t.get("language_prob", 0.0) or 0.0,
                 language_detected=t.get("language_detected"),
                 language_fallback=bool(t.get("language_fallback", False)),
-                text=t.get("text", ""),
+                raw_text=t.get("raw_text") or t.get("text", ""),
+                cleaned_text=t.get("cleaned_text") or t.get("text", ""),
+                text=t.get("cleaned_text") or t.get("text", ""),
             )
             for i, t in enumerate(record["transcript"] or [])
         ]
@@ -480,6 +487,65 @@ def set_speaker_identification(
         return _to_dict(meeting)
 
 
+def reassign_transcript_lines(
+    meeting_id: str,
+    changes: list[dict],
+) -> dict | None:
+    """
+    Reassign individual transcript lines to a different display speaker.
+
+    Used when diarization collapsed two people onto one label and greeting
+    turn-taking (or embedding split) tells us which later lines belong to
+    the other person. Each change needs start_sec + new_speaker; optionally
+    new_speaker_label and confidence.
+    """
+    if not changes:
+        return get_meeting(meeting_id)
+
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None:
+            return None
+
+        # Next free Speaker_XX id if we need distinct diarization labels.
+        used_ids: set[int] = set()
+        for line in meeting.transcript_lines:
+            label = line.speaker_label or ""
+            m = re.match(r"(?i)^speaker[_\s]?(\d+)$", label.strip())
+            if m:
+                used_ids.add(int(m.group(1)))
+        next_id = (max(used_ids) + 1) if used_ids else 0
+
+        by_start = {round(float(c["start_sec"]), 2): c for c in changes if "start_sec" in c}
+        for line in meeting.transcript_lines:
+            key = round(float(line.start_sec), 2)
+            change = by_start.get(key)
+            if change is None:
+                continue
+            new_name = (change.get("new_speaker") or "").strip()
+            if not new_name:
+                continue
+            line.speaker = new_name
+            line.identified_as = new_name
+            if change.get("confidence") is not None:
+                line.confidence = float(change["confidence"])
+            # Give the reply its own diarization label so future enroll/match
+            # treats the two voices separately.
+            new_label = change.get("new_speaker_label")
+            if not new_label:
+                new_label = f"Speaker_{next_id:02d}"
+                next_id += 1
+            line.speaker_label = new_label
+
+        session.flush()
+        session.expire(meeting)
+        meeting = session.get(Meeting, meeting_id)
+        _refresh_speaker_stats_from_transcript(session, meeting)
+        session.expire(meeting)
+        meeting = session.get(Meeting, meeting_id)
+        return _to_dict(meeting)
+
+
 def delete_meeting(meeting_id: str) -> bool:
     """Soft delete: mark the meeting trashed."""
     with session_scope() as session:
@@ -635,6 +701,11 @@ def audio_path(meeting_id: str) -> str | None:
     for name in os.listdir(directory):
         return os.path.join(directory, name)
     return None
+
+
+def clear_meeting_audio(meeting_id: str) -> None:
+    """Remove all stored audio files for a meeting before replacing them."""
+    _delete_audio(meeting_id)
 
 
 def save_audio(meeting_id: str, filename: str, source_path: str) -> str:

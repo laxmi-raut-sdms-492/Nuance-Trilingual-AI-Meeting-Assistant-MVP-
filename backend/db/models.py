@@ -74,6 +74,7 @@ class Meeting(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="Processing", index=True)
     progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error: Mapped[str | None] = mapped_column(Text)
+    audio_quality_warning: Mapped[str | None] = mapped_column(Text)
     failed_segments: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     duration: Mapped[str | None] = mapped_column(String(32))
@@ -185,6 +186,10 @@ class TranscriptLine(Base):
     # was used instead. The UI flags these so a reader can distrust them.
     language_fallback: Mapped[bool] = mapped_column(nullable=False, default=False)
 
+    # Raw ASR verbatim output; cleaned_text is the readable turn after merge/cleanup.
+    raw_text: Mapped[str | None] = mapped_column(Text)
+    cleaned_text: Mapped[str | None] = mapped_column(Text)
+    # Display field — mirrors cleaned_text when present, else raw/text legacy.
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
     meeting: Mapped[Meeting] = relationship(back_populates="transcript_lines")

@@ -11,9 +11,7 @@ import { useMeetings } from '../../context/MeetingsContext.jsx'
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 const TYPE_COLORS = { audio: '#3b82f6', video: '#10b981', other: '#a1a1aa' }
 
-// Matches the three languages the backend supports. Colours are the export's
-// speaker tokens so the palette stays coherent with the transcript.
-const LANGUAGE_COLORS = { English: '#3b82f6', Hindi: '#a855f7', Marathi: '#10b981' }
+import { LANGUAGE_COLORS } from '../../constants/languages.js'
 
 const AUDIO_EXT = ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus', 'webm']
 const VIDEO_EXT = ['mp4', 'mov', 'mkv', 'avi']

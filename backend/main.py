@@ -32,7 +32,7 @@ import logging
 import tempfile
 import os
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, Form, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import LOG_LEVEL, CORS_ORIGINS
@@ -43,7 +43,37 @@ from pipeline import MeetingSession
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL), format="%(asctime)s [%(name)s] %(message)s")
 
-app = FastAPI(title="Meeting Intelligence API")
+app = FastAPI(
+    title="Meeting Intelligence API",
+    description=(
+        "Backend for the Nuance meeting assistant. "
+        "For the web UI, open **http://localhost:5173** — this `/docs` page is "
+        "API reference for developers only."
+    ),
+)
+
+@app.get("/")
+def root():
+    """Friendly landing page — `/docs` alone confused people into thinking the backend was broken."""
+    return {
+        "status": "ok",
+        "service": "Meeting Intelligence API",
+        "frontend": "http://localhost:5173",
+        "api": "/api/meetings",
+        "docs": "/docs",
+        "message": "Backend is running. Open the frontend URL for the meeting assistant UI.",
+    }
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    """Return 204 No Content for browser favicon requests to suppress 404 log entries."""
+    return Response(status_code=204)
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 app.add_middleware(
     CORSMiddleware,

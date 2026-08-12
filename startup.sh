@@ -152,7 +152,7 @@ PY
   # Migrations are idempotent; running them every boot means a fresh clone and
   # an existing install both end up at the same schema with no manual step.
   log "applying database migrations"
-  (cd "$BACKEND_DIR" && "$venv/bin/alembic" upgrade head) \
+  (cd "$BACKEND_DIR" && "$venv/bin/alembic" upgrade heads) \
     || die "alembic upgrade failed — see the output above"
 }
 

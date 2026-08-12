@@ -152,6 +152,12 @@ def get_trash():
     return {"meetings": [_without_transcript(m) for m in store.list_trash()]}
 
 
+@router.delete("/meetings/trash")
+def purge_all_trash():
+    count = store.purge_all_trash()
+    return {"status": "purged", "count": count}
+
+
 @router.get("/meetings/{meeting_id}")
 def get_meeting(meeting_id: str):
     meeting = store.get_meeting(meeting_id)

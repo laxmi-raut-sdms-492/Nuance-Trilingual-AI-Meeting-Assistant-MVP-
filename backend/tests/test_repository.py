@@ -337,6 +337,24 @@ def test_purge_removes_the_recording(audio_dir, tmp_path):
     assert repo.list_trash() == []
 
 
+def test_purge_all_trash_removes_everything(audio_dir, tmp_path):
+    ids = []
+    for i in range(3):
+        record = make_record(f"MTG-trash-{i}")
+        repo.add_meeting(record)
+        repo.delete_meeting(record["id"])
+        ids.append(record["id"])
+
+        source = tmp_path / f"upload-{i}.wav"
+        source.write_bytes(b"RIFF")
+        repo.save_audio(record["id"], f"meeting-{i}.wav", str(source))
+
+    assert repo.purge_all_trash() == 3
+    assert repo.list_trash() == []
+    for meeting_id in ids:
+        assert repo.audio_path(meeting_id) is None
+
+
 def test_row_only_delete_keeps_the_recording(audio_dir, tmp_path):
     """Re-import replaces rows. The audio is the one thing that cannot be
     regenerated, so it must survive."""

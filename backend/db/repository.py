@@ -621,6 +621,23 @@ def purge_meeting(meeting_id: str) -> bool:
     return True
 
 
+def purge_all_trash() -> int:
+    """Permanently delete every trashed meeting and its recording. No undo."""
+    with session_scope() as session:
+        meeting_ids = list(
+            session.scalars(
+                select(Meeting.id).where(Meeting.deleted_at.is_not(None))
+            ).all()
+        )
+        if not meeting_ids:
+            return 0
+        session.execute(delete(Meeting).where(Meeting.deleted_at.is_not(None)))
+
+    for meeting_id in meeting_ids:
+        _delete_audio(meeting_id)
+    return len(meeting_ids)
+
+
 def delete_meeting_row_only(meeting_id: str) -> bool:
     """
     Delete the database rows but leave the audio on disk.

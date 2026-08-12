@@ -40,6 +40,8 @@ from audio_utils import load_audio_file
 from models.embedding import get_embedding
 from models.identifier import SpeakerIdentifier
 from pipeline import MeetingSession
+from stt.base import STTProviderError
+from stt.resolver import resolve_stt_adapter
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL), format="%(asctime)s [%(name)s] %(message)s")
 
@@ -148,11 +150,26 @@ def delete_speaker(name: str):
 
 
 @app.websocket("/ws/meeting/{session_id}")
-async def meeting_stream(websocket: WebSocket, session_id: str):
+async def meeting_stream(
+    websocket: WebSocket,
+    session_id: str,
+    processing_mode: str = "",
+    stt_provider: str = "",
+):
     await websocket.accept()
 
     if session_id not in sessions:
-        sessions[session_id] = MeetingSession(session_id, identifier)
+        # Live sessions are in-memory only (no Meeting DB row backs them),
+        # so per-session mode comes from query params on connect, e.g.
+        # /ws/meeting/{id}?processing_mode=cloud&stt_provider=sarvam.
+        # Missing/blank -> local, same default as uploads.
+        try:
+            stt_adapter = resolve_stt_adapter(processing_mode or None, stt_provider or None)
+        except STTProviderError as exc:
+            logging.getLogger("main").error(f"[{session_id}] could not resolve STT adapter: {exc}")
+            await websocket.close(code=1011, reason=str(exc))
+            return
+        sessions[session_id] = MeetingSession(session_id, identifier, stt_adapter=stt_adapter)
     session = sessions[session_id]
 
     while True:

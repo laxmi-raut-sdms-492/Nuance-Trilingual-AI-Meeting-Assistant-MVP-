@@ -44,6 +44,7 @@ export default function UploadMeeting() {
   const [title, setTitle] = useState('')
   const [agenda, setAgenda] = useState('')
   const [formErrors, setFormErrors] = useState({})
+  const [processingMode, setProcessingMode] = useState('local') // local | cloud
 
   const [mode, setMode] = useState('upload') // upload | record
   const [dragOver, setDragOver] = useState(false)
@@ -54,7 +55,7 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
-  const details = { title, agenda }
+  const details = { title, agenda, processingMode, sttProvider: 'sarvam' }
 
   const validateDetails = () => {
     const errors = {}
@@ -147,6 +148,7 @@ export default function UploadMeeting() {
     setTitle('')
     setAgenda('')
     setFormErrors({})
+    setProcessingMode('local')
     setStep('details')
   }
 
@@ -229,6 +231,37 @@ export default function UploadMeeting() {
                 }`}
               />
               {formErrors.agenda && <FieldError id="agenda-error">{formErrors.agenda}</FieldError>}
+            </div>
+
+            <div className="space-y-2">
+              <label className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider">
+                Processing Mode
+              </label>
+              <div className="flex p-1 bg-surface-container rounded-lg w-fit border border-border">
+                {[
+                  { key: 'local', label: 'Local' },
+                  { key: 'cloud', label: 'Cloud' },
+                ].map((m) => (
+                  <button
+                    key={m.key}
+                    type="button"
+                    onClick={() => setProcessingMode(m.key)}
+                    aria-pressed={processingMode === m.key}
+                    className={`px-6 py-2 rounded font-label-sm text-label-sm transition-all ${
+                      processingMode === m.key
+                        ? 'bg-surface-raised text-text-primary shadow-sm'
+                        : 'text-text-muted hover:text-text-primary hover:bg-surface/50'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+              {processingMode === 'cloud' && (
+                <p className="font-meta-data text-meta-data text-text-muted">
+                  Cloud provider: Sarvam
+                </p>
+              )}
             </div>
 
             <div className="pt-6 border-t border-border flex justify-end">

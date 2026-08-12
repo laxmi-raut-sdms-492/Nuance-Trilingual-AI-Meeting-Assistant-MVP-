@@ -50,12 +50,12 @@ def test_transcribe_hindi_calls_indic_decode():
     audio = _tone(2.0)
     with (
         patch("models.asr.language_ranking", return_value=[("hi", 0.92)]),
-        patch("models.asr._decode_indic", return_value="ठीक आहे") as indic,
+        patch("models.asr._decode_indic", return_value="ठीक है") as indic,
         patch("models.asr._decode_whisper") as whisper,
     ):
         result = transcribe(audio, hint_language=None)
     assert result["language"] == "hi"
-    assert result["text"] == "ठीक आहे"
+    assert result["text"] == "ठीक है"
     indic.assert_called_once()
     whisper.assert_not_called()
 

@@ -44,13 +44,14 @@ from models.embedding import get_embedding
 from models.diarizer import SessionDiarizer
 from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
-from models.asr import transcribe, transcribe_with_context
 from models.identifier import SpeakerIdentifier
 from models.name_hints import (
     extract_self_introduction_name,
     resolve_names_from_greetings,
 )
 from models.speaker_matcher import UNKNOWN
+from stt.base import STTAdapter
+from stt.local_adapter import LocalSTTAdapter
 
 logger = logging.getLogger("pipeline")
 MIN_SPEECH_SAMPLES = int(MIN_SPEECH_SECONDS * SAMPLE_RATE)
@@ -81,9 +82,18 @@ def format_duration(seconds: float) -> str:
 
 
 class MeetingSession:
-    def __init__(self, session_id: str, identifier: SpeakerIdentifier):
+    def __init__(
+        self,
+        session_id: str,
+        identifier: SpeakerIdentifier,
+        stt_adapter: STTAdapter | None = None,
+    ):
         self.session_id = session_id
         self.identifier = identifier
+        # Defaults to local — every existing caller that does not pass
+        # stt_adapter (older code, tests, the live-session path before this
+        # was wired up) gets exactly the pre-Phase-2 behaviour.
+        self.stt_adapter: STTAdapter = stt_adapter or LocalSTTAdapter()
         self.diarizer = SessionDiarizer()
         self.segmenter = SpeechSegmenter()
         self.transcript: list[dict] = []
@@ -535,11 +545,11 @@ class MeetingSession:
         identified_as, confidence = self.identifier.identify(stable_embedding)
 
         if self._full_audio is not None:
-            asr = transcribe_with_context(
+            asr = self.stt_adapter.transcribe_with_context(
                 self._full_audio, start, end, hint_language=self.dominant_language
             )
         else:
-            asr = transcribe(audio, hint_language=self.dominant_language)
+            asr = self.stt_adapter.transcribe(audio, hint_language=self.dominant_language)
         if not asr["text"]:
             return None
 

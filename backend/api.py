@@ -42,6 +42,8 @@ from config import (
 from models import summarizer
 from models.identifier import SpeakerIdentifier
 from pipeline import MeetingSession, format_duration
+from stt.base import STTProviderError
+from stt.resolver import PROCESSING_MODES, resolve_stt_adapter
 
 logger = logging.getLogger("api")
 
@@ -164,6 +166,8 @@ def create_meeting(
     file: UploadFile = File(...),
     title: str = Form(""),
     agenda: str = Form(""),
+    processing_mode: str = Form(""),
+    stt_provider: str = Form(""),
 ):
     extension = _extension(file.filename)
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -171,6 +175,14 @@ def create_meeting(
             415,
             f"Unsupported file type '{extension or 'unknown'}'. "
             f"Accepted: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
+        )
+
+    processing_mode = processing_mode.strip().lower()
+    stt_provider = stt_provider.strip().lower()
+    if processing_mode and processing_mode not in PROCESSING_MODES:
+        raise HTTPException(
+            400,
+            f"Unknown processing_mode '{processing_mode}'. Expected one of {PROCESSING_MODES}.",
         )
 
     tmp_path, size = _save_upload_to_temp(file)
@@ -196,6 +208,12 @@ def create_meeting(
         "status": "Processing",
         "progress": 0,
         "error": None,
+        # NULL/unset resolves to local (config.DEFAULT_PROCESSING_MODE) —
+        # see stt/resolver.py and db/models.py. Left unset rather than
+        # written as "local" so "the user didn't choose" stays distinguishable
+        # from "the user chose local" if that ever matters later.
+        "processingMode": processing_mode or None,
+        "sttProvider": stt_provider or None,
         # Filled in by the pipeline once processing finishes.
         "duration": None,
         "durationSeconds": None,
@@ -796,6 +814,21 @@ def process_meeting(meeting_id: str):
         store.update_meeting(meeting_id, status="Failed", error="Stored audio file is missing.")
         return
 
+    meeting_record = store.get_meeting(meeting_id)
+    processing_mode = (meeting_record or {}).get("processingMode")
+    stt_provider = (meeting_record or {}).get("sttProvider")
+
+    try:
+        stt_adapter = resolve_stt_adapter(processing_mode, stt_provider)
+    except STTProviderError as exc:
+        # Fails the meeting immediately rather than silently falling back to
+        # local — e.g. processing_mode=cloud with a missing SARVAM_API_KEY
+        # must surface as a clear error, not process under settings the
+        # user didn't choose.
+        logger.error(f"[{meeting_id}] could not resolve STT adapter: {exc}")
+        store.update_meeting(meeting_id, status="Failed", progress=0, error=str(exc))
+        return
+
     with _processing_lock:
         try:
             # Reclaim the GPU before Whisper asks for it. On a 4 GB card an
@@ -810,7 +843,7 @@ def process_meeting(meeting_id: str):
             audio = load_audio_file(path)
             wall_clock_seconds = len(audio) / SAMPLE_RATE
 
-            session = MeetingSession(meeting_id, _identifier())
+            session = MeetingSession(meeting_id, _identifier(), stt_adapter=stt_adapter)
 
             def on_progress(fraction: float):
                 store.update_meeting(meeting_id, progress=int(fraction * 100))

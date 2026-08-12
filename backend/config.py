@@ -85,6 +85,41 @@ LANGUAGE_DETECT_MIN_PROB = 0.40
 # 3-way guess over blind English if it clears this floor (below 3-way chance).
 LANGUAGE_DETECT_WEAK_FLOOR = 0.25
 
+# --- Code-switch (mixed-language segment) detection ---
+#
+# Language is decided once per segment, so a segment that contains a switch
+# with no pause in it gets ONE language and ONE engine, and the half in the
+# other language comes back mangled. Nothing splits a segment on language the
+# way scd.py splits it on speaker.
+#
+# This does not fix that. It detects it, so a mangled line is flagged instead
+# of being presented as a confident transcription — and so a future language
+# change detector has a cheap gate telling it which segments are worth the
+# expensive windowed pass.
+#
+# The signal is free: language_ranking() already computes the full ranking and
+# only the winner was ever read. Clean single-language speech separates hugely
+# (0.97 vs 0.02); a segment holding two languages lands near 0.45 vs 0.40,
+# because the detector really did hear both.
+#
+# UNMEASURED. Unlike the ASR thresholds above, this number has not been tuned
+# against recordings with known switch points — it is a starting value. Measure
+# before trusting it, and see ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY below.
+LANGUAGE_AMBIGUITY_MARGIN = float(os.getenv("LANGUAGE_AMBIGUITY_MARGIN", "0.15"))
+
+# Require the top two candidates to straddle the Latin/Devanagari boundary
+# before calling a segment mixed.
+#
+# A close hi-vs-mr margin means almost nothing on its own: the two are closely
+# related and the detector confuses them constantly on short segments — which
+# is why asr.py already carries a hi<->mr retry. Flagging those would bury the
+# real signal in noise. English against a Devanagari language is different:
+# they are not acoustically confusable, so both scoring highly is good evidence
+# that both were actually spoken. Set to 0 to flag every close call.
+ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY = os.getenv(
+    "ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY", "1"
+).lower() in ("1", "true", "yes")
+
 # --- ASR quality guards ---
 #
 # Whisper is an autoregressive decoder with no alignment constraint: nothing

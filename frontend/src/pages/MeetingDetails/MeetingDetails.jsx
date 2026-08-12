@@ -656,6 +656,25 @@ export default function MeetingDetails() {
                                   MIX
                                 </span>
                               )}
+                              {/* Distinct from MIX. MIX means this turn merged
+                                  segments in different languages, each of which
+                                  was transcribed correctly. This means ONE
+                                  segment appears to hold two languages with no
+                                  pause between them — it was transcribed as a
+                                  single language by a single engine, so part of
+                                  the text below is probably wrong. */}
+                              {t.language_mixed_suspected && (
+                                <span
+                                  title={
+                                    'Two languages scored almost equally here ' +
+                                    `(margin ${t.language_margin}). This line was still ` +
+                                    'transcribed as one language, so part of it may be inaccurate.'
+                                  }
+                                  className="px-1.5 py-0.5 border border-processing/40 rounded text-[10px] uppercase font-bold tracking-wider text-processing ml-1"
+                                >
+                                  Mixed?
+                                </span>
+                              )}
                             </div>
                             <p
                               lang={t.language}

@@ -577,6 +577,12 @@ class MeetingSession:
             "language_prob": asr["language_prob"],
             "language_detected": asr["language_detected"],
             "language_fallback": asr["language_fallback"],
+            # Two languages scored almost equally on this segment, which
+            # usually means both were spoken in it. The segment is still
+            # transcribed as one language by one engine, so the other half is
+            # probably mangled — this is what says so.
+            "language_margin": asr.get("language_margin", 1.0),
+            "language_mixed_suspected": asr.get("language_mixed_suspected", False),
             "raw_text": raw_text,
             "text": raw_text,
             "is_turn": False,
@@ -660,10 +666,28 @@ class MeetingSession:
         return max(len(significant), 1) if stats else 0
 
     def language_breakdown(self) -> list[dict]:
-        """Which of the three languages this meeting was actually spoken in."""
+        """
+        Which of the three languages this meeting was actually spoken in.
+
+        Counted over the pre-merge ASR segments, NOT the merged turns. A turn
+        can hold more than one language — someone answers in English and
+        finishes in Marathi — and a turn carries a single dominant label.
+        Counting turns therefore charges the whole turn's duration to that one
+        label and the minority language vanishes from the breakdown entirely,
+        even though its text is right there in the transcript.
+
+        `raw_segments` is only populated once build_and_apply_turns has run;
+        before that `transcript` still holds the unmerged segments, so the
+        fallback is the same data either way and mid-processing calls (the
+        upload progress sync) stay correct.
+        """
+        source = self.raw_segments or self.transcript
+
         totals: dict[str, float] = {}
-        for entry in self.transcript:
-            code = entry["language"]
+        for entry in source:
+            code = entry.get("language")
+            if not code:
+                continue
             totals[code] = totals.get(code, 0.0) + (entry["end_sec"] - entry["start_sec"])
 
         grand_total = sum(totals.values())

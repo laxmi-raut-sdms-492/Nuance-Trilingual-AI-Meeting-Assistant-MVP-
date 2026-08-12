@@ -31,6 +31,8 @@ from config import (
     DEFAULT_LANGUAGE,
     LANGUAGE_DETECT_MIN_PROB,
     LANGUAGE_DETECT_WEAK_FLOOR,
+    LANGUAGE_AMBIGUITY_MARGIN,
+    ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY,
     ASR_MAX_NO_SPEECH_PROB,
     ASR_MIN_AVG_LOGPROB,
     ASR_WHISPER_NO_SPEECH_THRESHOLD,
@@ -183,7 +185,7 @@ def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
             logger.info(f"dropping script-mismatched {language} decode: {text!r}")
             text = ""
 
-    return _result(text, language, detected, prob, used_fallback)
+    return _result(text, language, detected, prob, used_fallback, ranked)
 
 
 def transcribe_with_context(
@@ -227,6 +229,19 @@ def transcribe_with_context(
     s1 = min(len(full_audio), int(end_sec * SAMPLE_RATE))
     seg_audio = full_audio[s0:s1]
 
+    # `ranked` above was computed over the PADDED window — up to 8s wider on
+    # each side than the segment. That is the right input for *choosing* a
+    # decode language (more context, better guess) and the wrong input for the
+    # mixed-language flag: a switch anywhere in the neighbourhood would mark
+    # every segment near it as mixed, which is most of them.
+    #
+    # So when the padded window looks ambiguous, re-rank the exact segment and
+    # let that decide the flag. One extra encoder pass, paid only on the
+    # minority of segments that get this far.
+    flag_ranked = ranked
+    if mixed_language_signal(ranked)[1]:
+        flag_ranked = language_ranking(seg_audio)
+
     if _uses_indic_conformer(language):
         text = _decode_indic(seg_audio, language, seg_duration)
     else:
@@ -265,7 +280,7 @@ def transcribe_with_context(
         else:
             text = ""
 
-    return _result(text, language, detected, prob, used_fallback)
+    return _result(text, language, detected, prob, used_fallback, flag_ranked)
 
 
 def _text_for_time_range(
@@ -390,7 +405,50 @@ def _simple_hallucination_reason(text: str, duration: float) -> str | None:
     return None
 
 
-def _result(text: str, language: str, detected: str, prob: float, used_fallback: bool) -> dict:
+def mixed_language_signal(ranked: list[tuple[str, float]]) -> tuple[float, bool]:
+    """
+    (margin, mixed_suspected) from a language ranking.
+
+    `margin` is the gap between the top two candidates. Wide means the detector
+    was sure; narrow means it scored two languages almost equally, which on a
+    segment long enough to hold a sentence usually means both were spoken.
+
+    Only pairs that straddle the Latin/Devanagari boundary are flagged — see
+    ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY in config.py for why a close hi/mr call
+    is noise rather than signal.
+
+    This detects a mixed segment. It does not split one: the segment is still
+    transcribed in a single language by a single engine, so the minority half
+    is still mangled. The flag is what stops that being presented as a
+    confident result.
+    """
+    if len(ranked) < 2:
+        return 1.0, False
+
+    (top_code, top_prob), (second_code, second_prob) = ranked[0], ranked[1]
+    margin = round(float(top_prob) - float(second_prob), 3)
+
+    if margin >= LANGUAGE_AMBIGUITY_MARGIN:
+        return margin, False
+
+    if not ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY:
+        return margin, True
+
+    straddles_scripts = (top_code in ASR_DEVANAGARI_LANGUAGES) != (
+        second_code in ASR_DEVANAGARI_LANGUAGES
+    )
+    return margin, straddles_scripts
+
+
+def _result(
+    text: str,
+    language: str,
+    detected: str,
+    prob: float,
+    used_fallback: bool,
+    ranked: list[tuple[str, float]] | None = None,
+) -> dict:
+    margin, mixed = mixed_language_signal(ranked or [(detected, prob)])
     return {
         "text": text,
         "language": language,
@@ -398,6 +456,11 @@ def _result(text: str, language: str, detected: str, prob: float, used_fallback:
         "language_detected": detected,
         "language_prob": prob,
         "language_fallback": used_fallback,
+        # Gap to the runner-up language. Kept as a number, not just the boolean
+        # below, so the threshold can be re-tuned against stored transcripts
+        # without re-running the pipeline.
+        "language_margin": margin,
+        "language_mixed_suspected": mixed,
     }
 
 

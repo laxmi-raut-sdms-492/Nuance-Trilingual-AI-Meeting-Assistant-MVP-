@@ -53,9 +53,85 @@ def _segment_key(seg: dict) -> str:
     return str(seg.get("speaker_label") or seg.get("speaker") or "")
 
 
+def _seg_seconds(seg: dict) -> float:
+    return max(float(seg.get("end_sec") or 0) - float(seg.get("start_sec") or 0), 0.0)
+
+
+def _record_language(turn: dict, seg: dict) -> None:
+    """
+    Accumulate talk time per language inside this turn.
+
+    Kept per language rather than as a running "current language" so the turn
+    can be labelled by how much of it was actually spoken in each — see
+    _apply_dominant_language.
+    """
+    lang = seg.get("language")
+    if not lang:
+        return
+
+    stats = turn.setdefault("_lang_stats", {})
+    entry = stats.get(lang)
+    if entry is None:
+        entry = {
+            "seconds": 0.0,
+            "segments": 0,
+            "name": seg.get("language_name"),
+            "prob": 0.0,
+            "detected": seg.get("language_detected"),
+            "fallback": False,
+        }
+        stats[lang] = entry
+        # First-seen order, which is the order language_mix is reported in.
+        turn.setdefault("languages", []).append(lang)
+
+    entry["seconds"] += _seg_seconds(seg)
+    entry["segments"] += 1
+    entry["prob"] = max(entry["prob"], float(seg.get("language_prob") or 0.0))
+    entry["fallback"] = entry["fallback"] or bool(seg.get("language_fallback", False))
+    if not entry["name"]:
+        entry["name"] = seg.get("language_name")
+
+
+def _apply_dominant_language(turn: dict) -> None:
+    """
+    Label the turn with the language most of it was spoken in.
+
+    Previously the last segment merged into a turn simply overwrote
+    turn["language"], so a turn that ran 20s English then 5s Marathi was
+    labelled Marathi — and language_breakdown, which reads that field,
+    charged all 25s to Marathi. Ranking by seconds fixes both.
+
+    Nothing is discarded: the minority language is still in raw_text and
+    still listed in language_mix.
+    """
+    stats = turn.pop("_lang_stats", {}) or {}
+    if not stats:
+        return
+
+    order = turn.get("languages") or list(stats)
+
+    # Seconds decide it. Segment count and first-seen order only break ties,
+    # which happens when segments carry no usable duration.
+    def rank(code: str):
+        return (
+            stats[code]["seconds"],
+            stats[code]["segments"],
+            -order.index(code) if code in order else 0,
+        )
+
+    winner = max(stats, key=rank)
+    best = stats[winner]
+
+    turn["language"] = winner
+    turn["language_name"] = best["name"] or turn.get("language_name")
+    turn["language_prob"] = round(best["prob"], 3)
+    turn["language_detected"] = best["detected"]
+    turn["language_fallback"] = best["fallback"]
+
+
 def _start_turn(seg: dict) -> dict[str, Any]:
     raw = seg.get("raw_text") or seg.get("text") or ""
-    return {
+    turn = {
         "start_sec": float(seg.get("start_sec") or 0),
         "end_sec": float(seg.get("end_sec") or 0),
         "time": seg.get("time"),
@@ -64,16 +140,26 @@ def _start_turn(seg: dict) -> dict[str, Any]:
         "identified_as": seg.get("identified_as"),
         "confidence": seg.get("confidence", 0.0),
         "color": seg.get("color"),
+        # Provisional — _apply_dominant_language sets the final values once
+        # every segment in the turn has been seen.
         "language": seg.get("language"),
         "language_name": seg.get("language_name"),
         "language_prob": seg.get("language_prob", 0.0),
         "language_detected": seg.get("language_detected"),
         "language_fallback": seg.get("language_fallback", False),
-        "languages": [seg.get("language")] if seg.get("language") else [],
+        # Mixed-segment flags are per segment, not per language, so they are
+        # carried on the turn directly: a turn is suspect if ANY segment in it
+        # is, and keeps the narrowest (most ambiguous) margin it saw.
+        "language_margin": float(seg.get("language_margin", 1.0) or 0.0),
+        "language_mixed_suspected": bool(seg.get("language_mixed_suspected", False)),
+        "languages": [],
+        "_lang_stats": {},
         "raw_parts": [raw] if raw else [],
         "segment_count": 1,
         "is_turn": True,
     }
+    _record_language(turn, seg)
+    return turn
 
 
 def _extend_turn(turn: dict, seg: dict) -> None:
@@ -82,16 +168,14 @@ def _extend_turn(turn: dict, seg: dict) -> None:
         turn["raw_parts"].append(raw)
     turn["end_sec"] = float(seg.get("end_sec") or turn["end_sec"])
     turn["segment_count"] = turn.get("segment_count", 1) + 1
-    lang = seg.get("language")
-    if lang and lang not in turn.get("languages", []):
-        turn.setdefault("languages", []).append(lang)
-    # Dominant language by segment count in turn (simple majority proxy).
-    turn["language"] = seg.get("language") or turn.get("language")
-    turn["language_name"] = seg.get("language_name") or turn.get("language_name")
-    turn["language_prob"] = max(
-        float(turn.get("language_prob") or 0),
-        float(seg.get("language_prob") or 0),
+    turn["language_margin"] = min(
+        float(turn.get("language_margin", 1.0) or 0.0),
+        float(seg.get("language_margin", 1.0) or 0.0),
     )
+    turn["language_mixed_suspected"] = bool(
+        turn.get("language_mixed_suspected", False)
+    ) or bool(seg.get("language_mixed_suspected", False))
+    _record_language(turn, seg)
 
 
 def _finalize_turn(turn: dict) -> dict:
@@ -100,6 +184,9 @@ def _finalize_turn(turn: dict) -> dict:
     turn["raw_text"] = raw_text
     turn["cleaned_text"] = cleaned
     turn["text"] = cleaned
+    # Must run before "languages" is popped — it uses first-seen order to
+    # break ties.
+    _apply_dominant_language(turn)
     langs = turn.pop("languages", [])
     if len(langs) > 1:
         turn["language_mix"] = langs

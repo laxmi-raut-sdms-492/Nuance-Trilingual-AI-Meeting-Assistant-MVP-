@@ -61,6 +61,33 @@ _MEETING_FIELDS = {
 }
 
 
+# transcript_lines.language_mix is stored comma-joined ("en,mr") rather than as
+# JSON, so SQLite (the test database) and Postgres behave identically. The API
+# shape is a list, as the pipeline produces and the UI expects.
+
+
+def _join_language_mix(codes) -> str | None:
+    """['en', 'mr'] -> 'en,mr'. None for a single-language or unmarked line."""
+    if not codes:
+        return None
+    if isinstance(codes, str):
+        codes = [c for c in codes.split(",")]
+    cleaned = [str(c).strip() for c in codes if str(c).strip()]
+    # One language is not a mix; storing it would make every line look
+    # code-switched in the UI.
+    if len(cleaned) < 2:
+        return None
+    return ",".join(cleaned)
+
+
+def _split_language_mix(value: str | None) -> list[str] | None:
+    """'en,mr' -> ['en', 'mr']. None when the line was single-language."""
+    if not value:
+        return None
+    codes = [c.strip() for c in value.split(",") if c.strip()]
+    return codes or None
+
+
 def _to_dict(meeting: Meeting) -> dict:
     """ORM row -> the exact JSON shape the frontend already consumes."""
     return {
@@ -112,6 +139,9 @@ def _to_dict(meeting: Meeting) -> dict:
                 "language_prob": t.language_prob,
                 "language_detected": t.language_detected,
                 "language_fallback": t.language_fallback,
+                "language_mix": _split_language_mix(t.language_mix),
+                "language_mixed_suspected": t.language_mixed_suspected,
+                "language_margin": t.language_margin,
                 "raw_text": t.raw_text,
                 "cleaned_text": t.cleaned_text,
                 "text": t.cleaned_text or t.text,
@@ -200,6 +230,11 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 language_prob=t.get("language_prob", 0.0) or 0.0,
                 language_detected=t.get("language_detected"),
                 language_fallback=bool(t.get("language_fallback", False)),
+                language_mix=_join_language_mix(t.get("language_mix")),
+                language_mixed_suspected=bool(t.get("language_mixed_suspected", False)),
+                language_margin=(
+                    1.0 if t.get("language_margin") is None else float(t["language_margin"])
+                ),
                 raw_text=t.get("raw_text") or t.get("text", ""),
                 cleaned_text=t.get("cleaned_text") or t.get("text", ""),
                 text=t.get("cleaned_text") or t.get("text", ""),

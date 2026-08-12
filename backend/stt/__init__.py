@@ -1,0 +1,1 @@
+"""STT Adapter Architecture Package."""

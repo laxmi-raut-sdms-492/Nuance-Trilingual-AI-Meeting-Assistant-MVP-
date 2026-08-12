@@ -80,10 +80,20 @@ def format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+from stt.base import STTAdapter
+from stt.factory import get_stt_adapter
+
+
 class MeetingSession:
-    def __init__(self, session_id: str, identifier: SpeakerIdentifier):
+    def __init__(
+        self,
+        session_id: str,
+        identifier: SpeakerIdentifier,
+        stt_adapter: STTAdapter | None = None,
+    ):
         self.session_id = session_id
         self.identifier = identifier
+        self.stt_adapter = stt_adapter or get_stt_adapter()
         self.diarizer = SessionDiarizer()
         self.segmenter = SpeechSegmenter()
         self.transcript: list[dict] = []
@@ -535,11 +545,11 @@ class MeetingSession:
         identified_as, confidence = self.identifier.identify(stable_embedding)
 
         if self._full_audio is not None:
-            asr = transcribe_with_context(
+            asr = self.stt_adapter.transcribe_with_context(
                 self._full_audio, start, end, hint_language=self.dominant_language
             )
         else:
-            asr = transcribe(audio, hint_language=self.dominant_language)
+            asr = self.stt_adapter.transcribe(audio, hint_language=self.dominant_language)
         if not asr["text"]:
             return None
 
@@ -577,6 +587,9 @@ class MeetingSession:
             "language_prob": asr["language_prob"],
             "language_detected": asr["language_detected"],
             "language_fallback": asr["language_fallback"],
+            "adapter": asr.get("adapter", self.stt_adapter.adapter_type),
+            "provider": asr.get("provider", self.stt_adapter.provider_name),
+            "model": asr.get("model", self.stt_adapter.model_name),
             # Two languages scored almost equally on this segment, which
             # usually means both were spoken in it. The segment is still
             # transcribed as one language by one engine, so the other half is
@@ -685,10 +698,29 @@ class MeetingSession:
 
         totals: dict[str, float] = {}
         for entry in source:
-            code = entry.get("language")
-            if not code:
+            dur = max(float(entry.get("end_sec", 0)) - float(entry.get("start_sec", 0)), 0.0)
+            if dur <= 0:
                 continue
-            totals[code] = totals.get(code, 0.0) + (entry["end_sec"] - entry["start_sec"])
+
+            primary_code = entry.get("language")
+            if not primary_code:
+                continue
+
+            text = entry.get("raw_text") or entry.get("text") or ""
+            dev_count = sum(1 for ch in text if "\u0900" <= ch <= "\u097f")
+            lat_count = sum(1 for ch in text if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+
+            if dev_count > 0 and lat_count > 0:
+                total_letters = dev_count + lat_count
+                dev_ratio = dev_count / total_letters
+                lat_ratio = lat_count / total_letters
+
+                indic_code = primary_code if primary_code in ("hi", "mr") else "mr"
+
+                totals[indic_code] = totals.get(indic_code, 0.0) + (dur * dev_ratio)
+                totals["en"] = totals.get("en", 0.0) + (dur * lat_ratio)
+            else:
+                totals[primary_code] = totals.get(primary_code, 0.0) + dur
 
         grand_total = sum(totals.values())
         if grand_total <= 0:
@@ -702,6 +734,7 @@ class MeetingSession:
                 "pct": round(seconds / grand_total * 100, 1),
             }
             for code, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+            if seconds > 0.05
         ]
 
     def spoken_duration(self) -> float:

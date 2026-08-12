@@ -30,14 +30,32 @@ def _normalize_whitespace(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").strip())
 
 
+_ROMAN_INDIC_MAP = {
+    r"\baahe\b": "आहे",
+    r"\bahet\b": "आहेत",
+    r"\bnahi\b": "नाही",
+    r"\bpan\b": "पण",
+    r"\bhaye\b": "हाय",
+    r"\bshikshak\b": "शिक्षक",
+}
+
+
 def rule_based_cleanup(raw_text: str) -> str:
     """
     Light formatting only — no word invention. Adds spacing and terminal
     punctuation when clearly missing; preserves Devanagari and Latin mix.
+    Converts common Romanized Indic words in Devanagari sentences into Devanagari.
     """
     text = _normalize_whitespace(raw_text)
     if not text:
         return text
+
+    # Harmonize Romanized Indic words when Devanagari script is present in the line
+    has_devanagari = any("\u0900" <= c <= "\u097f" for c in text)
+    if has_devanagari:
+        for pattern, dev_repl in _ROMAN_INDIC_MAP.items():
+            text = re.sub(pattern, dev_repl, text, flags=re.IGNORECASE)
+
     # Avoid stacking punctuation.
     if text[-1] not in ".!?…।":
         # Devanagari-heavy lines often end with danda in speech but ASR omits it.
@@ -178,16 +196,67 @@ def _extend_turn(turn: dict, seg: dict) -> None:
     _record_language(turn, seg)
 
 
+def _deduplicate_phrase_parts(parts: list[str]) -> list[str]:
+    """Remove exact and overlapping duplicate phrases between consecutive segments."""
+    if not parts:
+        return []
+
+    clean_parts: list[str] = []
+    for part in parts:
+        p = _normalize_whitespace(part)
+        if not p:
+            continue
+        if not clean_parts:
+            clean_parts.append(p)
+            continue
+
+        prev = clean_parts[-1]
+        if p == prev or p in prev:
+            continue
+        if prev in p:
+            clean_parts[-1] = p
+            continue
+
+        # Check word-level overlap (3+ words)
+        prev_words = prev.split()
+        curr_words = p.split()
+        max_k = min(len(prev_words), len(curr_words))
+        overlap_k = 0
+        for k in range(max_k, 2, -1):
+            if [w.lower() for w in prev_words[-k:]] == [w.lower() for w in curr_words[:k]]:
+                overlap_k = k
+                break
+
+        if overlap_k > 0:
+            p = " ".join(curr_words[overlap_k:]).strip()
+
+        if p:
+            clean_parts.append(p)
+
+    return clean_parts
+
+
 def _finalize_turn(turn: dict) -> dict:
-    raw_text = _normalize_whitespace(" ".join(turn.pop("raw_parts", [])))
+    parts = _deduplicate_phrase_parts(turn.pop("raw_parts", []))
+    raw_text = _normalize_whitespace(" ".join(parts))
     cleaned = rule_based_cleanup(raw_text)
     turn["raw_text"] = raw_text
     turn["cleaned_text"] = cleaned
     turn["text"] = cleaned
-    # Must run before "languages" is popped — it uses first-seen order to
-    # break ties.
+
     _apply_dominant_language(turn)
     langs = turn.pop("languages", [])
+
+    dev_count = sum(1 for ch in raw_text if "\u0900" <= ch <= "\u097f")
+    lat_count = sum(1 for ch in raw_text if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+
+    if dev_count > 0 and lat_count > 0:
+        indic_code = turn.get("language") if turn.get("language") in ("hi", "mr") else "mr"
+        if "en" not in langs:
+            langs.append("en")
+        if indic_code not in langs:
+            langs.append(indic_code)
+
     if len(langs) > 1:
         turn["language_mix"] = langs
     return turn

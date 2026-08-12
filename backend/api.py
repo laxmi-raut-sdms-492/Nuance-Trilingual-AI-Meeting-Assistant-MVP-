@@ -164,6 +164,7 @@ def create_meeting(
     file: UploadFile = File(...),
     title: str = Form(""),
     agenda: str = Form(""),
+    stt_adapter: str = Form("local"),
 ):
     extension = _extension(file.filename)
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -214,7 +215,7 @@ def create_meeting(
     }
     store.add_meeting(record)
 
-    background_tasks.add_task(process_meeting, meeting_id)
+    background_tasks.add_task(process_meeting, meeting_id, stt_adapter)
     return record
 
 
@@ -786,7 +787,10 @@ def _generate_summary(meeting_id: str, transcript: list[dict]) -> dict:
         return {}
 
 
-def process_meeting(meeting_id: str):
+from stt.factory import get_stt_adapter
+
+
+def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
     """
     Transcribe one uploaded meeting. Runs in FastAPI's background threadpool
     after the upload response has already been sent.
@@ -810,7 +814,8 @@ def process_meeting(meeting_id: str):
             audio = load_audio_file(path)
             wall_clock_seconds = len(audio) / SAMPLE_RATE
 
-            session = MeetingSession(meeting_id, _identifier())
+            stt_adapter = get_stt_adapter(stt_adapter_choice)
+            session = MeetingSession(meeting_id, _identifier(), stt_adapter=stt_adapter)
 
             def on_progress(fraction: float):
                 store.update_meeting(meeting_id, progress=int(fraction * 100))

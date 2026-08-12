@@ -43,6 +43,7 @@ export default function UploadMeeting() {
 
   const [title, setTitle] = useState('')
   const [agenda, setAgenda] = useState('')
+  const [sttAdapter, setSttAdapter] = useState('local') // local | cloud
   const [formErrors, setFormErrors] = useState({})
 
   const [mode, setMode] = useState('upload') // upload | record
@@ -54,7 +55,7 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
-  const details = { title, agenda }
+  const details = { title, agenda, stt_adapter: sttAdapter }
 
   const validateDetails = () => {
     const errors = {}
@@ -231,7 +232,17 @@ export default function UploadMeeting() {
               {formErrors.agenda && <FieldError id="agenda-error">{formErrors.agenda}</FieldError>}
             </div>
 
-            <div className="pt-6 border-t border-border flex justify-end">
+            <div className="pt-6 border-t border-border flex justify-end items-center gap-3">
+              <select
+                id="stt-adapter-selector"
+                value={sttAdapter}
+                onChange={(e) => setSttAdapter(e.target.value)}
+                className="bg-surface border border-border text-text-primary font-label-sm text-label-sm px-3 py-3 rounded-lg focus:outline-none focus:border-primary transition-colors cursor-pointer"
+              >
+                <option value="local">Local STT</option>
+                <option value="cloud">Cloud STT</option>
+              </select>
+
               <button
                 type="submit"
                 className="bg-cta text-on-cta font-label-sm text-label-sm px-6 py-3 rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2"

@@ -1,6 +1,22 @@
 """Central configuration for the meeting intelligence backend."""
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# --- STT Adapter Architecture ---
+STT_ADAPTER = os.getenv("STT_ADAPTER", "local").lower()            # local | cloud
+CLOUD_STT_PROVIDER = os.getenv("CLOUD_STT_PROVIDER", "sarvam").lower()  # sarvam | google
+
+# Sarvam STT Config
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+SARVAM_MODEL = os.getenv("SARVAM_MODEL", "saaras:v3")
+
+# Google Cloud STT Config
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # --- Audio ---
 

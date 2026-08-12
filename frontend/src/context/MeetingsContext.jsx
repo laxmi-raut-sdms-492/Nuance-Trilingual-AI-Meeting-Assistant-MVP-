@@ -75,6 +75,7 @@ export function MeetingsProvider({ children }) {
     formData.append('file', file, file.name)
     formData.append('title', details.title?.trim() || '')
     formData.append('agenda', details.agenda?.trim() || '')
+    formData.append('stt_adapter', details.stt_adapter || 'local')
 
     const { data } = await meetingsApi.create(formData, onUploadProgress)
     const record = normalizeMeeting(data)

@@ -129,24 +129,40 @@ def detect_language(audio: np.ndarray) -> tuple[str, float]:
     return language_ranking(audio)[0]
 
 
+def _try_indic_conformer_recovery(
+    audio: np.ndarray,
+    current_text: str,
+    current_language: str,
+    duration: float,
+    hint_language: str | None = None,
+) -> tuple[str, str]:
+    """
+    If language was classified as English ('en') but the audio is actually Marathi ('mr')
+    or Hindi ('hi'), attempt IndicConformer decode. If it produces valid Devanagari script,
+    recover the correct Indic language and Devanagari text.
+    """
+    if not INDIC_CONFORMER_ENABLED or current_language in ASR_DEVANAGARI_LANGUAGES:
+        return current_text, current_language
+
+    indic_candidates = ["mr", "hi"]
+    if hint_language in ("mr", "hi"):
+        indic_candidates = [hint_language, "mr" if hint_language == "hi" else "hi"]
+
+    for cand in indic_candidates:
+        try:
+            indic_text = _decode_indic(audio, cand, duration)
+            if indic_text and not _is_script_mismatch(indic_text, cand):
+                logger.info(
+                    f"IndicConformer recovery: replaced Romanized/English decode with Devanagari {cand}: {indic_text!r}"
+                )
+                return indic_text, cand
+        except Exception as exc:
+            logger.debug(f"IndicConformer recovery attempt for {cand} failed: {exc}")
+
+    return current_text, current_language
+
+
 def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
-    """
-    audio: 1-D float32 numpy array, 16kHz mono — one single-speaker segment.
-
-    hint_language: the meeting's dominant language so far. Used only as a
-    fallback when this segment's own detection is too weak to trust, which
-    happens on very short or noisy segments.
-
-    Returns {"text", "language", "language_prob", "language_name",
-             "language_detected", "language_fallback"}.
-    `text` is "" when the segment is judged to be non-speech.
-
-    `language_prob` is always the detector's confidence in `language_detected`,
-    its own top choice. When the fallback fires, `language` differs from
-    `language_detected` and `language_fallback` is True — without that flag a
-    reader sees something like "en (0.70)" and cannot tell that the 0.70
-    belonged to a language which was then thrown away.
-    """
     duration = len(audio) / SAMPLE_RATE
 
     ranked = language_ranking(audio)
@@ -167,6 +183,11 @@ def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
         )
 
     text = _decode(audio, language, duration)
+
+    if language == "en":
+        text, language = _try_indic_conformer_recovery(
+            audio, text, language, duration, hint_language=hint_language
+        )
 
     # A Devanagari language that decoded into Latin script means the decode failed.
     # Retry with the other Devanagari language (hi↔mr) before dropping.
@@ -195,10 +216,6 @@ def transcribe_with_context(
     hint_language: str | None = None,
     padding_sec: float | None = None,
 ) -> dict:
-    """
-    Transcribe a time range. English uses Whisper with padded context; Hindi and
-    Marathi use Indic Conformer on the exact segment (no timestamp trimming).
-    """
     pad = ASR_CONTEXT_PADDING_SEC if padding_sec is None else padding_sec
     seg_duration = end_sec - start_sec
     total_sec = len(full_audio) / SAMPLE_RATE
@@ -229,15 +246,6 @@ def transcribe_with_context(
     s1 = min(len(full_audio), int(end_sec * SAMPLE_RATE))
     seg_audio = full_audio[s0:s1]
 
-    # `ranked` above was computed over the PADDED window — up to 8s wider on
-    # each side than the segment. That is the right input for *choosing* a
-    # decode language (more context, better guess) and the wrong input for the
-    # mixed-language flag: a switch anywhere in the neighbourhood would mark
-    # every segment near it as mixed, which is most of them.
-    #
-    # So when the padded window looks ambiguous, re-rank the exact segment and
-    # let that decide the flag. One extra encoder pass, paid only on the
-    # minority of segments that get this far.
     flag_ranked = ranked
     if mixed_language_signal(ranked)[1]:
         flag_ranked = language_ranking(seg_audio)
@@ -256,6 +264,11 @@ def transcribe_with_context(
             abs_start=start_sec,
             abs_end=end_sec,
             clip_start=ctx_start,
+        )
+
+    if language == "en":
+        text, language = _try_indic_conformer_recovery(
+            seg_audio, text, language, seg_duration, hint_language=hint_language
         )
 
     if text and _is_script_mismatch(text, language):
@@ -289,14 +302,15 @@ def _text_for_time_range(
     abs_end: float,
     clip_start: float,
 ) -> str:
-    """Keep only Whisper segment text overlapping the target time window."""
+    """Keep only Whisper segment text whose midpoint falls within the target time window."""
     parts: list[str] = []
     for seg in result.get("segments") or []:
         seg_start = clip_start + float(seg.get("start", 0))
         seg_end = clip_start + float(seg.get("end", 0))
-        if seg_end > abs_start + 0.05 and seg_start < abs_end - 0.05:
+        seg_mid = (seg_start + seg_end) / 2.0
+        if abs_start - 0.2 <= seg_mid <= abs_end + 0.2:
             chunk = (seg.get("text") or "").strip()
-            if chunk:
+            if chunk and chunk not in parts:
                 parts.append(chunk)
     if parts:
         return " ".join(parts).strip()

@@ -123,6 +123,13 @@ def make_record(meeting_id: str = "MTG-test000000", **overrides) -> dict:
                 "language_prob": 0.98,
                 "language_detected": "en",
                 "language_fallback": False,
+                # None = this line was single-language. A code-switched turn
+                # carries the list of languages it contains, e.g. ["en", "mr"].
+                "language_mix": None,
+                # False / near-1.0 margin = the detector was confident this
+                # segment held one language.
+                "language_mixed_suspected": False,
+                "language_margin": 0.96,
                 "raw_text": "Let us begin the quarterly planning meeting.",
                 "cleaned_text": "Let us begin the quarterly planning meeting.",
                 "text": "Let us begin the quarterly planning meeting.",
@@ -141,6 +148,9 @@ def make_record(meeting_id: str = "MTG-test000000", **overrides) -> dict:
                 "language_prob": 0.62,
                 "language_detected": "mr",
                 "language_fallback": False,
+                "language_mix": None,
+                "language_mixed_suspected": False,
+                "language_margin": 0.96,
                 "raw_text": "मच्छरो मुळे तक्रारी वाढल्या आहेत.",
                 "cleaned_text": "मच्छरो मुळे तक्रारी वाढल्या आहेत.",
                 "text": "मच्छरो मुळे तक्रारी वाढल्या आहेत.",

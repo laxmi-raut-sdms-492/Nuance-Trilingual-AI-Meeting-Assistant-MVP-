@@ -81,6 +81,62 @@ def test_devanagari_survives_the_round_trip():
     assert stored["transcript"][1]["language"] == "mr"
 
 
+def test_language_mix_survives_the_round_trip():
+    """
+    A code-switched turn must still be recognisable as code-switched after it
+    has been through the database. Before language_mix was persisted it was
+    built in memory, dropped on write, and the UI's "mixed" badge could
+    therefore never fire on an uploaded meeting.
+    """
+    record = make_record()
+    record["transcript"][0]["language_mix"] = ["en", "mr"]
+    repo.add_meeting(record)
+
+    stored = repo.get_meeting(record["id"])
+    assert stored["transcript"][0]["language_mix"] == ["en", "mr"]
+    # The dominant language is unaffected by the mix.
+    assert stored["transcript"][0]["language"] == record["transcript"][0]["language"]
+
+
+def test_single_language_line_has_no_language_mix():
+    """A one-language line must not come back looking code-switched."""
+    record = make_record()
+    record["transcript"][0]["language_mix"] = ["en"]
+    repo.add_meeting(record)
+
+    stored = repo.get_meeting(record["id"])
+    assert stored["transcript"][0]["language_mix"] is None
+    # A line that never carried the field at all behaves the same way.
+    assert stored["transcript"][1]["language_mix"] is None
+
+
+def test_mixed_language_flag_survives_the_round_trip():
+    record = make_record()
+    record["transcript"][0]["language_mixed_suspected"] = True
+    record["transcript"][0]["language_margin"] = 0.04
+    repo.add_meeting(record)
+
+    stored = repo.get_meeting(record["id"])
+    assert stored["transcript"][0]["language_mixed_suspected"] is True
+    assert stored["transcript"][0]["language_margin"] == 0.04
+    assert stored["transcript"][1]["language_mixed_suspected"] is False
+
+
+def test_missing_mixed_language_fields_default_to_certain():
+    """
+    Callers written before these fields existed (and the reprocess tools) must
+    keep working. Absent means "no evidence of a mix", not an error.
+    """
+    record = make_record()
+    del record["transcript"][0]["language_mixed_suspected"]
+    del record["transcript"][0]["language_margin"]
+    repo.add_meeting(record)
+
+    stored = repo.get_meeting(record["id"])
+    assert stored["transcript"][0]["language_mixed_suspected"] is False
+    assert stored["transcript"][0]["language_margin"] == 1.0
+
+
 def test_transcript_order_is_by_position_not_insertion():
     """Speaker colours are assigned in first-appearance order, so order is data."""
     record = make_record()

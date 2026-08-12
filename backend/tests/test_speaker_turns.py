@@ -47,6 +47,89 @@ def test_language_change_does_not_split_speaker():
     assert turns[0].get("language_mix") == ["en", "mr"]
 
 
+def test_turn_language_is_the_majority_not_the_last_segment():
+    """
+    Speaker starts in English and finishes in Marathi. The turn is English —
+    that is where 20 of its 25 seconds went. Labelling it by whichever segment
+    merged last called this Marathi and then charged all 25s to Marathi in the
+    meeting's language breakdown.
+    """
+    segments = [
+        _seg(0, 20, "Speaker_00", "We need to ship the release this week.", lang="en"),
+        _seg(20, 25, "Speaker_00", "म्हणजे उद्या सुरू करूया.", lang="mr"),
+    ]
+    turns = build_speaker_turns(segments)
+    assert len(turns) == 1
+    assert turns[0]["language"] == "en"
+    assert turns[0]["language_name"] == "English"
+    # The minority language is reported, not discarded.
+    assert turns[0]["language_mix"] == ["en", "mr"]
+    assert "म्हणजे" in turns[0]["raw_text"]
+
+
+def test_turn_language_majority_when_minority_spoke_first():
+    """Same rule in the other direction — first-spoken must not win either."""
+    segments = [
+        _seg(0, 4, "Speaker_01", "Quick update.", lang="en"),
+        _seg(4, 30, "Speaker_01", "बाकी काम आज पूर्ण होईल.", lang="hi"),
+    ]
+    turns = build_speaker_turns(segments)
+    assert turns[0]["language"] == "hi"
+    assert turns[0]["language_mix"] == ["en", "hi"]
+
+
+def test_single_language_turn_has_no_language_mix():
+    segments = [
+        _seg(0, 3, "Speaker_00", "One", lang="en"),
+        _seg(3.2, 6, "Speaker_00", "Two", lang="en"),
+    ]
+    turns = build_speaker_turns(segments)
+    assert turns[0]["language"] == "en"
+    assert "language_mix" not in turns[0]
+
+
+def test_turn_carries_the_winning_languages_probability():
+    """language_prob must describe the language actually shown, not another."""
+    segments = [
+        {**_seg(0, 20, "Speaker_00", "Long English part.", lang="en"), "language_prob": 0.91},
+        {**_seg(20, 24, "Speaker_00", "थोडं मराठी.", lang="mr"), "language_prob": 0.44},
+    ]
+    turns = build_speaker_turns(segments)
+    assert turns[0]["language"] == "en"
+    assert turns[0]["language_prob"] == 0.91
+
+
+def test_turn_is_flagged_mixed_if_any_segment_was():
+    """
+    One suspect segment makes the whole turn suspect. A reader deciding whether
+    to trust a turn needs to know some of it may be mistranscribed, and the
+    turn is the unit they actually read.
+    """
+    segments = [
+        {**_seg(0, 5, "Speaker_00", "Clean English.", lang="en"), "language_margin": 0.95},
+        {
+            **_seg(5, 9, "Speaker_00", "Friday manje udya", lang="en"),
+            "language_margin": 0.03,
+            "language_mixed_suspected": True,
+        },
+    ]
+    turns = build_speaker_turns(segments)
+    assert len(turns) == 1
+    assert turns[0]["language_mixed_suspected"] is True
+    # Narrowest margin seen — the most ambiguous moment in the turn.
+    assert turns[0]["language_margin"] == 0.03
+
+
+def test_turn_of_clean_segments_is_not_flagged():
+    segments = [
+        {**_seg(0, 5, "Speaker_00", "One.", lang="en"), "language_margin": 0.95},
+        {**_seg(5, 9, "Speaker_00", "Two.", lang="en"), "language_margin": 0.91},
+    ]
+    turns = build_speaker_turns(segments)
+    assert turns[0]["language_mixed_suspected"] is False
+    assert turns[0]["language_margin"] == 0.91
+
+
 def test_two_speakers_produce_two_turns():
     segments = [
         _seg(0, 2, "Speaker_00", "Hello"),

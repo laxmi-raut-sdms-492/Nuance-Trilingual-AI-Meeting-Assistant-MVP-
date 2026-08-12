@@ -199,6 +199,23 @@ class TranscriptLine(Base):
     # True when detection was near chance and the meeting's dominant language
     # was used instead. The UI flags these so a reader can distrust them.
     language_fallback: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Every language spoken in this turn, comma-separated in first-heard order
+    # ("en,mr"), set only when there is more than one. `language` above is the
+    # dominant one; without this column a code-switched turn is indistinguishable
+    # from a single-language one once it has been through the database, and the
+    # UI's "mixed" badge could never fire on an uploaded meeting.
+    # Comma-joined rather than JSON so SQLite (tests) and Postgres behave the same.
+    language_mix: Mapped[str | None] = mapped_column(String(64))
+    # Two languages scored almost equally on this segment — usually because
+    # both were spoken in it, with no pause for the segmenter to cut on. The
+    # line was still transcribed as a single language by a single engine, so
+    # the minority half is probably wrong. Detection only; nothing splits a
+    # segment on language yet.
+    language_mixed_suspected: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Gap between the top two candidate languages. Stored as well as the flag
+    # so the threshold can be re-tuned against transcripts already on disk
+    # instead of requiring a reprocess. 1.0 = detector was certain.
+    language_margin: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
 
     # Raw ASR verbatim output; cleaned_text is the readable turn after merge/cleanup.
     raw_text: Mapped[str | None] = mapped_column(Text)

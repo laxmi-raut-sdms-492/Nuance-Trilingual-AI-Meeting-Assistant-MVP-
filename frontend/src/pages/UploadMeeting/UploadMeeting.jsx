@@ -56,11 +56,7 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
-<<<<<<< HEAD
-  const details = { title, agenda, stt_adapter: sttAdapter }
-=======
-  const details = { title, agenda, processingMode, sttProvider: 'sarvam' }
->>>>>>> origin/master
+  const details = { title, agenda, stt_adapter: sttAdapter, processingMode: sttAdapter }
 
   const validateDetails = () => {
     const errors = {}

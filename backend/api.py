@@ -833,10 +833,6 @@ def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
             audio = load_audio_file(path)
             wall_clock_seconds = len(audio) / SAMPLE_RATE
 
-<<<<<<< HEAD
-            stt_adapter = get_stt_adapter(stt_adapter_choice)
-=======
->>>>>>> origin/master
             session = MeetingSession(meeting_id, _identifier(), stt_adapter=stt_adapter)
 
             def on_progress(fraction: float):

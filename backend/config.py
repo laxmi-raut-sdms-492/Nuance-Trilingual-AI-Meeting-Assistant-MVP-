@@ -1,7 +1,9 @@
 """Central configuration for the meeting intelligence backend."""
 
 import os
+from dotenv import load_dotenv
 
+load_dotenv()
 # --- Audio ---
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate

@@ -186,14 +186,14 @@ def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
             logger.info(f"dropping script-mismatched {language} decode: {text!r}")
             text = ""
 
-if text:
-    text, language = _verify_language_from_text(
-        text,
-        language,
-        redecode=lambda lang: _decode(audio, lang, duration),
-    )
-
-return _result(text, language, detected, prob, used_fallback, ranked)
+    if text:
+        text, language = _verify_language_from_text(
+            text,
+            language,
+            redecode=lambda lang: _decode(audio, lang, duration),
+        )
+    
+    return _result(text, language, detected, prob, used_fallback, ranked)
 
 
 def _verify_language_from_text(text: str, language: str, redecode) -> tuple[str, str]:
@@ -335,41 +335,41 @@ def transcribe_with_context(
         else:
             text = ""
 
-if text:
-    def _redecode(lang: str) -> str:
-        if _uses_indic_conformer(lang):
-            return _decode_indic(seg_audio, lang, seg_duration)
-
-        ctx_start = max(0.0, start_sec - pad)
-        ctx_end = min(total_sec, end_sec + pad)
-        clip = full_audio[
-            int(ctx_start * SAMPLE_RATE): int(ctx_end * SAMPLE_RATE)
-        ]
-        clip_duration = len(clip) / SAMPLE_RATE
-
-        return _decode_whisper(
-            clip,
-            lang,
-            clip_duration,
-            abs_start=start_sec,
-            abs_end=end_sec,
-            clip_start=ctx_start,
+    if text:
+        def _redecode(lang: str) -> str:
+            if _uses_indic_conformer(lang):
+                return _decode_indic(seg_audio, lang, seg_duration)
+    
+            ctx_start = max(0.0, start_sec - pad)
+            ctx_end = min(total_sec, end_sec + pad)
+            clip = full_audio[
+                int(ctx_start * SAMPLE_RATE): int(ctx_end * SAMPLE_RATE)
+            ]
+            clip_duration = len(clip) / SAMPLE_RATE
+    
+            return _decode_whisper(
+                clip,
+                lang,
+                clip_duration,
+                abs_start=start_sec,
+                abs_end=end_sec,
+                clip_start=ctx_start,
+            )
+    
+        text, language = _verify_language_from_text(
+            text,
+            language,
+            redecode=_redecode,
         )
-
-    text, language = _verify_language_from_text(
+    
+    return _result(
         text,
         language,
-        redecode=_redecode,
+        detected,
+        prob,
+        used_fallback,
+        flag_ranked,
     )
-
-return _result(
-    text,
-    language,
-    detected,
-    prob,
-    used_fallback,
-    flag_ranked,
-)
 
 
 def _text_for_time_range(

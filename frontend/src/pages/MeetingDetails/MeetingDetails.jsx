@@ -223,8 +223,7 @@ function SidePanel({ icon, iconClass = 'text-primary', title, children }) {
 function NotGenerated({ what }) {
   return (
     <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
-      {what} found nothing in this transcript. Every item has to quote the line it came from, and
-      anything that cannot be traced back is discarded rather than shown.
+      {what} found nothing traceable.
     </p>
   )
 }
@@ -439,6 +438,17 @@ export default function MeetingDetails() {
               {meeting.languages?.length > 0 && (
                 <MetaChip icon="translate">
                   {meeting.languages.map((l) => l.code.toUpperCase()).join(', ')}
+                </MetaChip>
+              )}
+              {meeting.processingMode && (
+                <MetaChip icon={meeting.processingMode === 'cloud' ? 'cloud' : 'devices'}>
+                  {meeting.processingMode === 'cloud'
+                    ? `Cloud • ${
+                        meeting.sttProvider
+                          ? meeting.sttProvider.charAt(0).toUpperCase() + meeting.sttProvider.slice(1)
+                          : 'Cloud'
+                      }`
+                    : 'Local Model'}
                 </MetaChip>
               )}
               <MetaChip icon="audio_file">{meeting.fileSizeLabel}</MetaChip>
@@ -750,7 +760,7 @@ export default function MeetingDetails() {
                 <SummaryProvenance engine={meeting.summaryEngine} />
               </>
             ) : (
-              <NotGenerated what="An executive summary" />
+              <NotGenerated what="No traceable insights" />
             )}
           </SidePanel>
 

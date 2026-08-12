@@ -47,6 +47,7 @@ from config import (
     INDIC_CONFORMER_ENABLED,
     INDIC_DECODE_LANGUAGES,
 )
+from models.text_lang_id import classify_text_language, TEXT_LANG_MIN_CONFIDENCE
 
 logger = logging.getLogger("asr")
 
@@ -206,7 +207,61 @@ def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
             logger.info(f"dropping script-mismatched {language} decode: {text!r}")
             text = ""
 
-    return _result(text, language, detected, prob, used_fallback, ranked)
+if text:
+    text, language = _verify_language_from_text(
+        text,
+        language,
+        redecode=lambda lang: _decode(audio, lang, duration),
+    )
+
+return _result(text, language, detected, prob, used_fallback, ranked)
+
+
+def _verify_language_from_text(text: str, language: str, redecode) -> tuple[str, str]:
+    """
+    Whisper's acoustic detector cannot reliably tell Hindi and Marathi apart
+    (see models/text_lang_id.py) and a fluent decode in the wrong one of the
+    two still passes the Devanagari script check cleanly. This is the
+    independent, text-based correction: once we actually have decoded text,
+    a small set of Hindi/Marathi function-word markers (Devanagari or
+    romanized) is a far stronger signal than the original audio guess.
+
+    Only overrides hi<->mr and en->{hi,mr} (romanized code-switch); never
+    overrides a correct-looking en decode away from en without lexical
+    evidence, and never touches text with no marker words at all.
+    """
+    guess, confidence = classify_text_language(text)
+    if guess is None or confidence < TEXT_LANG_MIN_CONFIDENCE:
+        return text, language
+    if guess == language:
+        return text, language
+    if guess not in ("hi", "mr"):
+        return text, language
+
+    # Try to get a proper native-script decode in the corrected language
+    # rather than just relabeling — the original decode may have been
+    # produced by the wrong language model entirely (e.g. Hindi Indic
+    # Conformer weights applied to Marathi audio).
+    try:
+        corrected_text = redecode(guess)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"redecode for lexical correction {language}->{guess} failed: {exc}")
+        corrected_text = ""
+
+    if corrected_text and not _is_script_mismatch(corrected_text, guess):
+        recheck, recheck_conf = classify_text_language(corrected_text)
+        if recheck is None or recheck == guess or recheck_conf < TEXT_LANG_MIN_CONFIDENCE:
+            logger.info(
+                f"lexical correction {language}->{guess} (conf={confidence:.2f}), redecoded"
+            )
+            return corrected_text, guess
+
+    # Redecode didn't help (e.g. romanized speech an Indic model can't take
+    # as input, or the alt decode disagrees too) — keep the original text but
+    # fix the label, since the lexical evidence on the actual transcribed
+    # words is more trustworthy than the acoustic guess.
+    logger.info(f"lexical correction {language}->{guess} (conf={confidence:.2f}), label only")
+    return text, guess
 
 
 def transcribe_with_context(
@@ -293,7 +348,41 @@ def transcribe_with_context(
         else:
             text = ""
 
-    return _result(text, language, detected, prob, used_fallback, flag_ranked)
+if text:
+    def _redecode(lang: str) -> str:
+        if _uses_indic_conformer(lang):
+            return _decode_indic(seg_audio, lang, seg_duration)
+
+        ctx_start = max(0.0, start_sec - pad)
+        ctx_end = min(total_sec, end_sec + pad)
+        clip = full_audio[
+            int(ctx_start * SAMPLE_RATE): int(ctx_end * SAMPLE_RATE)
+        ]
+        clip_duration = len(clip) / SAMPLE_RATE
+
+        return _decode_whisper(
+            clip,
+            lang,
+            clip_duration,
+            abs_start=start_sec,
+            abs_end=end_sec,
+            clip_start=ctx_start,
+        )
+
+    text, language = _verify_language_from_text(
+        text,
+        language,
+        redecode=_redecode,
+    )
+
+return _result(
+    text,
+    language,
+    detected,
+    prob,
+    used_fallback,
+    flag_ranked,
+)
 
 
 def _text_for_time_range(

@@ -21,7 +21,7 @@ import shutil
 
 from sqlalchemy import delete, func, inspect, select
 
-from config import AUDIO_DIR
+from config import AUDIO_DIR, DEFAULT_PROCESSING_MODE
 from db.models import (
     ActionItem,
     Decision,
@@ -58,6 +58,8 @@ _MEETING_FIELDS = {
     "language": "language",
     "summary": "summary",
     "summaryEngine": "summary_engine",
+    "processingMode": "processing_mode",
+    "sttProvider": "stt_provider",
 }
 
 
@@ -110,6 +112,11 @@ def _to_dict(meeting: Meeting) -> dict:
         "language": meeting.language,
         "summary": meeting.summary,
         "summaryEngine": meeting.summary_engine,
+        # NULL means "not explicitly set" at the DB level; exposed to
+        # callers already resolved to what the pipeline will actually use,
+        # so the frontend/API never needs its own copy of the default.
+        "processingMode": meeting.processing_mode or DEFAULT_PROCESSING_MODE,
+        "sttProvider": meeting.stt_provider,
         "languages": [
             {"code": l.code, "name": l.name, "seconds": l.seconds, "pct": l.pct}
             for l in meeting.languages

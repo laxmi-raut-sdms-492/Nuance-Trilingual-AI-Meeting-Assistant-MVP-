@@ -45,6 +45,7 @@ export default function UploadMeeting() {
   const [agenda, setAgenda] = useState('')
   const [sttAdapter, setSttAdapter] = useState('local') // local | cloud
   const [formErrors, setFormErrors] = useState({})
+  const [processingMode, setProcessingMode] = useState('local') // local | cloud
 
   const [mode, setMode] = useState('upload') // upload | record
   const [dragOver, setDragOver] = useState(false)
@@ -55,7 +56,11 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
+<<<<<<< HEAD
   const details = { title, agenda, stt_adapter: sttAdapter }
+=======
+  const details = { title, agenda, processingMode, sttProvider: 'sarvam' }
+>>>>>>> origin/master
 
   const validateDetails = () => {
     const errors = {}
@@ -148,6 +153,7 @@ export default function UploadMeeting() {
     setTitle('')
     setAgenda('')
     setFormErrors({})
+    setProcessingMode('local')
     setStep('details')
   }
 
@@ -242,7 +248,6 @@ export default function UploadMeeting() {
                 <option value="local">Local STT</option>
                 <option value="cloud">Cloud STT</option>
               </select>
-
               <button
                 type="submit"
                 className="bg-cta text-on-cta font-label-sm text-label-sm px-6 py-3 rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2"

@@ -77,6 +77,15 @@ export function MeetingsProvider({ children }) {
     formData.append('agenda', details.agenda?.trim() || '')
     formData.append('stt_adapter', details.stt_adapter || 'local')
 
+    // Backward compatible: any existing caller that doesn't pass
+    // processingMode still sends 'local', which is also the backend's own
+    // default for an omitted/blank value — see stt/resolver.py.
+    const processingMode = details.processingMode === 'cloud' ? 'cloud' : 'local'
+    formData.append('processing_mode', processingMode)
+    if (processingMode === 'cloud') {
+      formData.append('stt_provider', details.sttProvider || 'sarvam')
+    }
+
     const { data } = await meetingsApi.create(formData, onUploadProgress)
     const record = normalizeMeeting(data)
     invalidateInFlight()

@@ -44,13 +44,14 @@ from models.embedding import get_embedding
 from models.diarizer import SessionDiarizer
 from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
-from models.asr import transcribe, transcribe_with_context
 from models.identifier import SpeakerIdentifier
 from models.name_hints import (
     extract_self_introduction_name,
     resolve_names_from_greetings,
 )
 from models.speaker_matcher import UNKNOWN
+from stt.base import STTAdapter
+from stt.local_adapter import LocalSTTAdapter
 
 logger = logging.getLogger("pipeline")
 MIN_SPEECH_SAMPLES = int(MIN_SPEECH_SECONDS * SAMPLE_RATE)

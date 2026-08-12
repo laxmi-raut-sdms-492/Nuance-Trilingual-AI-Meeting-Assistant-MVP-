@@ -21,7 +21,7 @@ import shutil
 
 from sqlalchemy import delete, func, inspect, select
 
-from config import AUDIO_DIR
+from config import AUDIO_DIR, DEFAULT_PROCESSING_MODE
 from db.models import (
     ActionItem,
     Decision,
@@ -58,6 +58,8 @@ _MEETING_FIELDS = {
     "language": "language",
     "summary": "summary",
     "summaryEngine": "summary_engine",
+    "processingMode": "processing_mode",
+    "sttProvider": "stt_provider",
 }
 
 
@@ -110,6 +112,11 @@ def _to_dict(meeting: Meeting) -> dict:
         "language": meeting.language,
         "summary": meeting.summary,
         "summaryEngine": meeting.summary_engine,
+        # NULL means "not explicitly set" at the DB level; exposed to
+        # callers already resolved to what the pipeline will actually use,
+        # so the frontend/API never needs its own copy of the default.
+        "processingMode": meeting.processing_mode or DEFAULT_PROCESSING_MODE,
+        "sttProvider": meeting.stt_provider,
         "languages": [
             {"code": l.code, "name": l.name, "seconds": l.seconds, "pct": l.pct}
             for l in meeting.languages
@@ -612,6 +619,23 @@ def purge_meeting(meeting_id: str) -> bool:
 
     _delete_audio(meeting_id)
     return True
+
+
+def purge_all_trash() -> int:
+    """Permanently delete every trashed meeting and its recording. No undo."""
+    with session_scope() as session:
+        meeting_ids = list(
+            session.scalars(
+                select(Meeting.id).where(Meeting.deleted_at.is_not(None))
+            ).all()
+        )
+        if not meeting_ids:
+            return 0
+        session.execute(delete(Meeting).where(Meeting.deleted_at.is_not(None)))
+
+    for meeting_id in meeting_ids:
+        _delete_audio(meeting_id)
+    return len(meeting_ids)
 
 
 def delete_meeting_row_only(meeting_id: str) -> bool:

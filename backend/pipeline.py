@@ -51,13 +51,14 @@ from models.diarizer import SessionDiarizer
 from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
 from models.lcd import split_on_language_change
-from models.asr import transcribe, transcribe_with_context
 from models.identifier import SpeakerIdentifier
 from models.name_hints import (
     extract_self_introduction_name,
     resolve_names_from_greetings,
 )
 from models.speaker_matcher import UNKNOWN
+from stt.base import STTAdapter
+from stt.local_adapter import LocalSTTAdapter
 
 logger = logging.getLogger("pipeline")
 MIN_SPEECH_SAMPLES = int(MIN_SPEECH_SECONDS * SAMPLE_RATE)
@@ -87,10 +88,20 @@ def format_duration(seconds: float) -> str:
     return f"{secs}s"
 
 
+from stt.base import STTAdapter
+from stt.factory import get_stt_adapter
+
+
 class MeetingSession:
-    def __init__(self, session_id: str, identifier: SpeakerIdentifier):
+    def __init__(
+        self,
+        session_id: str,
+        identifier: SpeakerIdentifier,
+        stt_adapter: STTAdapter | None = None,
+    ):
         self.session_id = session_id
         self.identifier = identifier
+        self.stt_adapter = stt_adapter or get_stt_adapter()
         self.diarizer = SessionDiarizer()
         self.segmenter = SpeechSegmenter()
         self.transcript: list[dict] = []
@@ -631,11 +642,11 @@ class MeetingSession:
         hint = lcd_language or self.dominant_language  # lcd_language is None unless split
 
         if self._full_audio is not None and not was_split:
-            asr = transcribe_with_context(
+            asr = self.stt_adapter.transcribe_with_context(
                 self._full_audio, start, end, hint_language=hint
             )
         else:
-            asr = transcribe(audio, hint_language=hint)
+            asr = self.stt_adapter.transcribe(audio, hint_language=hint)
         if not asr["text"]:
             return None
 
@@ -673,10 +684,15 @@ class MeetingSession:
             "language_prob": asr["language_prob"],
             "language_detected": asr["language_detected"],
             "language_fallback": asr["language_fallback"],
-            # Two languages scored almost equally on this piece. After the LCD
-            # split this should be rare — a piece that still trips it is one
-            # the boundary search could not cleanly separate, which is exactly
-            # when a reader most needs telling.
+            "adapter": asr.get("adapter", self.stt_adapter.adapter_type),
+            "provider": asr.get("provider", self.stt_adapter.provider_name),
+            "model": asr.get("model", self.stt_adapter.model_name),
+            # Two languages scored almost equally on this piece. Before the LCD
+            # split this mostly meant both were spoken in one segment and half
+            # the text was mangled. Now it should be rare — a piece that still
+            # trips it is one the boundary search could not cleanly separate,
+            # which is exactly when a reader most needs telling.
+
             "language_margin": asr.get("language_margin", 1.0),
             "language_mixed_suspected": asr.get("language_mixed_suspected", False),
             "raw_text": raw_text,
@@ -783,10 +799,29 @@ class MeetingSession:
 
         totals: dict[str, float] = {}
         for entry in source:
-            code = entry.get("language")
-            if not code:
+            dur = max(float(entry.get("end_sec", 0)) - float(entry.get("start_sec", 0)), 0.0)
+            if dur <= 0:
                 continue
-            totals[code] = totals.get(code, 0.0) + (entry["end_sec"] - entry["start_sec"])
+
+            primary_code = entry.get("language")
+            if not primary_code:
+                continue
+
+            text = entry.get("raw_text") or entry.get("text") or ""
+            dev_count = sum(1 for ch in text if "\u0900" <= ch <= "\u097f")
+            lat_count = sum(1 for ch in text if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+
+            if dev_count > 0 and lat_count > 0:
+                total_letters = dev_count + lat_count
+                dev_ratio = dev_count / total_letters
+                lat_ratio = lat_count / total_letters
+
+                indic_code = primary_code if primary_code in ("hi", "mr") else "mr"
+
+                totals[indic_code] = totals.get(indic_code, 0.0) + (dur * dev_ratio)
+                totals["en"] = totals.get("en", 0.0) + (dur * lat_ratio)
+            else:
+                totals[primary_code] = totals.get(primary_code, 0.0) + dur
 
         grand_total = sum(totals.values())
         if grand_total <= 0:
@@ -800,6 +835,7 @@ class MeetingSession:
                 "pct": round(seconds / grand_total * 100, 1),
             }
             for code, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+            if seconds > 0.05
         ]
 
     def spoken_duration(self) -> float:

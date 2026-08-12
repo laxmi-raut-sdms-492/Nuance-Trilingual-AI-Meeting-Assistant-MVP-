@@ -1,6 +1,22 @@
 """Central configuration for the meeting intelligence backend."""
 
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# --- STT Adapter Architecture ---
+STT_ADAPTER = os.getenv("STT_ADAPTER", "local").lower()            # local | cloud
+CLOUD_STT_PROVIDER = os.getenv("CLOUD_STT_PROVIDER", "sarvam").lower()  # sarvam | google
+
+# Sarvam STT Config
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+SARVAM_MODEL = os.getenv("SARVAM_MODEL", "saaras:v3")
+
+# Google Cloud STT Config
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # --- Audio ---
 
@@ -376,6 +392,33 @@ AUDIO_DIR = os.path.join(STORAGE_DIR, "audio")
 os.makedirs(STORAGE_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
+# --- STT processing mode (local vs. cloud) ---
+# Per-meeting choice (Meeting.processing_mode) of which engine transcribes
+# that meeting. This env var is only the fallback used when a meeting's own
+# column is NULL/missing (old rows created before this existed) — see
+# stt/resolver.py. Local stays the default everywhere; cloud is opt-in.
+DEFAULT_PROCESSING_MODE = os.getenv("DEFAULT_PROCESSING_MODE", "local").strip().lower()
+
+# Which cloud provider stt/resolver.py uses when a meeting has
+# processing_mode="cloud" but no stt_provider of its own recorded (or when
+# the caller passes stt_provider=None). Sarvam is the only provider wired up
+# today; the resolver's provider registry is what makes adding another
+# (Google/Azure/AWS) not require touching pipeline.py.
+CLOUD_STT_DEFAULT_PROVIDER = os.getenv("CLOUD_STT_DEFAULT_PROVIDER", "sarvam").strip().lower()
+
+# --- Sarvam (cloud STT provider) ---
+# API key is never hardcoded — required only when a meeting actually uses
+# processing_mode=cloud with provider=sarvam; local-only usage never reads
+# this. See stt/sarvam_adapter.py.
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+# saaras:v3 (default/recommended) or saaras:v4 (broader language coverage).
+SARVAM_STT_MODEL = os.getenv("SARVAM_STT_MODEL", "saaras:v3")
+# transcribe | translate | verbatim | translit | codemix — only applies to
+# saaras:v3. "transcribe" matches what the local pipeline does (original
+# language, normalized).
+SARVAM_STT_MODE = os.getenv("SARVAM_STT_MODE", "transcribe")
+SARVAM_TIMEOUT_SECONDS = float(os.getenv("SARVAM_TIMEOUT_SECONDS", "30"))
+
 # --- Database ---
 # PostgreSQL. Override with DATABASE_URL in the environment; the default is a
 # local development role and is not a secret worth protecting, but do not reuse
@@ -385,7 +428,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 # resolves to psycopg2) and not "postgresql+psycopg2".
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://nuance:nuance_dev_pw@localhost:5432/nuance",
+    "postgresql+psycopg://nuance:nuance_dev@localhost:5432/nuance",
 )
 
 # Set SQL_ECHO=1 to log every statement. Useful when a query looks slow;

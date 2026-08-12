@@ -42,6 +42,8 @@ from config import (
 from models import summarizer
 from models.identifier import SpeakerIdentifier
 from pipeline import MeetingSession, format_duration
+from stt.base import STTProviderError
+from stt.resolver import PROCESSING_MODES, resolve_stt_adapter
 
 logger = logging.getLogger("api")
 
@@ -150,6 +152,12 @@ def get_trash():
     return {"meetings": [_without_transcript(m) for m in store.list_trash()]}
 
 
+@router.delete("/meetings/trash")
+def purge_all_trash():
+    count = store.purge_all_trash()
+    return {"status": "purged", "count": count}
+
+
 @router.get("/meetings/{meeting_id}")
 def get_meeting(meeting_id: str):
     meeting = store.get_meeting(meeting_id)
@@ -164,6 +172,9 @@ def create_meeting(
     file: UploadFile = File(...),
     title: str = Form(""),
     agenda: str = Form(""),
+    stt_adapter: str = Form("local"),
+    processing_mode: str = Form(""),
+    stt_provider: str = Form(""),
 ):
     extension = _extension(file.filename)
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -172,6 +183,8 @@ def create_meeting(
             f"Unsupported file type '{extension or 'unknown'}'. "
             f"Accepted: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
         )
+
+    adapter_choice = (stt_adapter or processing_mode or "local").strip().lower()
 
     tmp_path, size = _save_upload_to_temp(file)
 
@@ -196,7 +209,8 @@ def create_meeting(
         "status": "Processing",
         "progress": 0,
         "error": None,
-        # Filled in by the pipeline once processing finishes.
+        "processingMode": adapter_choice,
+        "sttProvider": stt_provider or None,
         "duration": None,
         "durationSeconds": None,
         "participants": None,
@@ -204,9 +218,6 @@ def create_meeting(
         "languages": [],
         "transcript": [],
         "speakerStats": [],
-        # Still empty by design: summary / decisions / action items / keywords
-        # require an LLM pass, which is a separate piece of work. They stay
-        # null rather than being faked.
         "summary": None,
         "decisions": [],
         "actionItems": [],
@@ -214,7 +225,7 @@ def create_meeting(
     }
     store.add_meeting(record)
 
-    background_tasks.add_task(process_meeting, meeting_id)
+    background_tasks.add_task(process_meeting, meeting_id, adapter_choice)
     return record
 
 
@@ -786,7 +797,10 @@ def _generate_summary(meeting_id: str, transcript: list[dict]) -> dict:
         return {}
 
 
-def process_meeting(meeting_id: str):
+from stt.factory import get_stt_adapter
+
+
+def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
     """
     Transcribe one uploaded meeting. Runs in FastAPI's background threadpool
     after the upload response has already been sent.
@@ -794,6 +808,21 @@ def process_meeting(meeting_id: str):
     path = store.audio_path(meeting_id)
     if path is None:
         store.update_meeting(meeting_id, status="Failed", error="Stored audio file is missing.")
+        return
+
+    meeting_record = store.get_meeting(meeting_id)
+    processing_mode = (meeting_record or {}).get("processingMode")
+    stt_provider = (meeting_record or {}).get("sttProvider")
+
+    try:
+        stt_adapter = resolve_stt_adapter(processing_mode, stt_provider)
+    except STTProviderError as exc:
+        # Fails the meeting immediately rather than silently falling back to
+        # local — e.g. processing_mode=cloud with a missing SARVAM_API_KEY
+        # must surface as a clear error, not process under settings the
+        # user didn't choose.
+        logger.error(f"[{meeting_id}] could not resolve STT adapter: {exc}")
+        store.update_meeting(meeting_id, status="Failed", progress=0, error=str(exc))
         return
 
     with _processing_lock:
@@ -810,7 +839,7 @@ def process_meeting(meeting_id: str):
             audio = load_audio_file(path)
             wall_clock_seconds = len(audio) / SAMPLE_RATE
 
-            session = MeetingSession(meeting_id, _identifier())
+            session = MeetingSession(meeting_id, _identifier(), stt_adapter=stt_adapter)
 
             def on_progress(fraction: float):
                 store.update_meeting(meeting_id, progress=int(fraction * 100))

@@ -104,6 +104,16 @@ class Meeting(Base):
         DateTime(timezone=True), nullable=True, index=True
     )
 
+    # Per-meeting STT selection (see backend/stt/). NULL means "not set" and
+    # is resolved to config.DEFAULT_PROCESSING_MODE ("local") by
+    # stt/resolver.py — nullable rather than a hard default so existing rows
+    # created before this column existed keep working with zero migration
+    # data-fixup and unambiguously mean "local, as before".
+    processing_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Only meaningful when processing_mode="cloud". NULL falls back to
+    # config.CLOUD_STT_DEFAULT_PROVIDER ("sarvam" today).
+    stt_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     transcript_lines: Mapped[list[TranscriptLine]] = relationship(
         back_populates="meeting",
         cascade="all, delete-orphan",
@@ -149,6 +159,10 @@ class Meeting(Base):
         CheckConstraint("file_size_bytes >= 0", name="ck_meetings_file_size"),
         # The list view is always "newest first".
         Index("ix_meetings_uploaded_at_desc", uploaded_at.desc()),
+        CheckConstraint(
+            "processing_mode IS NULL OR processing_mode IN ('local', 'cloud')",
+            name="ck_meetings_processing_mode",
+        ),
     )
 
 

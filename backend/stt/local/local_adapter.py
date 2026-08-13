@@ -52,9 +52,17 @@ class LocalSTTAdapter(STTAdapter):
         start_sec: float,
         end_sec: float,
         hint_language: str | None = None,
+        padding_sec: float | None = None,
     ) -> dict:
+        # padding_sec is part of the STTAdapter contract and models/asr.py
+        # honours it. Dropping it here would silently pin every caller to the
+        # default context width.
         result = local_transcribe_with_context(
-            full_audio, start_sec, end_sec, hint_language=hint_language
+            full_audio,
+            start_sec,
+            end_sec,
+            hint_language=hint_language,
+            padding_sec=padding_sec,
         )
         result["adapter"] = self.adapter_type
         result["provider"] = self.provider_name

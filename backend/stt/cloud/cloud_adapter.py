@@ -60,7 +60,12 @@ class CloudSTTAdapter(STTAdapter):
         start_sec: float,
         end_sec: float,
         hint_language: str | None = None,
+        padding_sec: float | None = None,
     ) -> dict:
+        # Accepted for interface parity and deliberately unused: a cloud
+        # provider transcribes whatever clip it is posted, so there is no
+        # windowed decode of a larger buffer for extra context to inform.
+        # Local honours it; taking it here keeps every caller identical.
         # For cloud adapters, extract segment audio slice directly
         sr = 16000
         start_idx = int(start_sec * sr)

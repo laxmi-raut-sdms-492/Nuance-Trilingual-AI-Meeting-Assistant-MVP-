@@ -99,8 +99,32 @@ class SarvamSTTAdapter(STTAdapter):
 
         self._client = SarvamAI(api_subscription_key=api_key, timeout=SARVAM_TIMEOUT_SECONDS)
 
-    def transcribe(self, audio: np.ndarray, hint_language: str | None = None) -> dict:
-        return self._transcribe_clip(audio, hint_language=hint_language)
+    # -- provenance (stt.base.STTAdapter) --
+    #
+    # Abstract on the base class, so omitting these makes the adapter
+    # impossible to instantiate rather than merely under-described. They are
+    # also what stamps each transcript line with where its text came from,
+    # which is the whole point of being able to switch providers per meeting.
+
+    @property
+    def adapter_type(self) -> str:
+        return "cloud"
+
+    @property
+    def provider_name(self) -> str:
+        return "sarvam"
+
+    @property
+    def model_name(self) -> str:
+        return SARVAM_STT_MODEL
+
+    def transcribe(
+        self,
+        audio: np.ndarray,
+        language: str | None = None,
+        hint_language: str | None = None,
+    ) -> dict:
+        return self._transcribe_clip(audio, hint_language=language or hint_language)
 
     def transcribe_with_context(
         self,
@@ -120,9 +144,16 @@ class SarvamSTTAdapter(STTAdapter):
 
     # -- internal --
 
+    def _stamp(self, result: dict) -> dict:
+        """Record which engine produced this text — part of the shared contract."""
+        result["adapter"] = self.adapter_type
+        result["provider"] = self.provider_name
+        result["model"] = self.model_name
+        return result
+
     def _transcribe_clip(self, audio: np.ndarray, hint_language: str | None) -> dict:
         if audio is None or len(audio) == 0:
-            return self._empty_result(hint_language)
+            return self._stamp(self._empty_result(hint_language))
 
         wav_bytes = _float32_to_wav_bytes(audio)
 
@@ -149,7 +180,7 @@ class SarvamSTTAdapter(STTAdapter):
         except Exception as exc:  # noqa: BLE001 - network/timeout/SDK internals
             raise STTProviderError(f"Sarvam request failed: {exc}") from exc
 
-        return self._to_contract(response, hint_language)
+        return self._stamp(self._to_contract(response, hint_language))
 
     def _to_contract(self, response, hint_language: str | None) -> dict:
         text = (getattr(response, "transcript", None) or "").strip()

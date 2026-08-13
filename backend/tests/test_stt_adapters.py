@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from stt.base import STTProviderError
 from stt.factory import get_stt_adapter
 from stt.local.local_adapter import LocalSTTAdapter
 from stt.cloud.cloud_adapter import CloudSTTAdapter
@@ -65,8 +66,11 @@ def test_sarvam_language_mappings():
 
 
 def test_sarvam_provider_missing_key(dummy_audio):
+    # STTProviderError, not ValueError: a missing key is a provider failure
+    # like auth or timeout, and api.py/main.py catch that one type to turn any
+    # of them into a clear message on the meeting.
     provider = SarvamProvider(api_key="")
-    with pytest.raises(ValueError, match="SARVAM_API_KEY is not configured"):
+    with pytest.raises(STTProviderError, match="SARVAM_API_KEY is not configured"):
         provider.transcribe(dummy_audio)
 
 

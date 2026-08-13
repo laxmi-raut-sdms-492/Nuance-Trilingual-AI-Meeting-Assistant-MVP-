@@ -816,7 +816,7 @@ def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
 
     try:
         stt_adapter = resolve_stt_adapter(processing_mode, stt_provider)
-    except STTProviderError as exc:
+    except Exception as exc:
         # Fails the meeting immediately rather than silently falling back to
         # local — e.g. processing_mode=cloud with a missing SARVAM_API_KEY
         # must surface as a clear error, not process under settings the

@@ -95,7 +95,13 @@ class SarvamSTTAdapter(STTAdapter):
         # Imported lazily so importing stt.sarvam_adapter (and therefore
         # stt.resolver) never requires the sarvamai package to be installed
         # unless cloud mode is actually used.
-        from sarvamai import SarvamAI
+        try:
+            from sarvamai import SarvamAI
+        except (ImportError, ModuleNotFoundError) as err:
+            raise STTProviderError(
+                "The 'sarvamai' Python package is not installed in the backend environment. "
+                "Run 'pip install sarvamai' or 'pip install -r requirements.txt'."
+            ) from err
 
         self._client = SarvamAI(api_subscription_key=api_key, timeout=SARVAM_TIMEOUT_SECONDS)
 

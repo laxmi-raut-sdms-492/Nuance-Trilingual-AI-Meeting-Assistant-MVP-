@@ -276,7 +276,7 @@ NEW_CLUSTER_EVIDENCE_COUNT = int(os.getenv("NEW_CLUSTER_EVIDENCE_COUNT", "3"))
 NEW_CLUSTER_MARGIN = float(os.getenv("NEW_CLUSTER_MARGIN", "0.08"))
 # When only one cluster exists, dist must exceed spread * this to split.
 SINGLE_CLUSTER_SPLIT_MULTIPLIER = float(
-    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "1.8")
+    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "0.1")
 )
 # Offline: collapse to 1 speaker when p90 pairwise embedding distance is below this.
 SINGLE_SPEAKER_P90_DISTANCE = float(os.getenv("SINGLE_SPEAKER_P90_DISTANCE", "0.38"))
@@ -286,11 +286,11 @@ TURN_MERGE_MAX_GAP_SEC = float(os.getenv("TURN_MERGE_MAX_GAP_SEC", "2.5"))
 TURN_MAX_DURATION_SEC = float(os.getenv("TURN_MAX_DURATION_SEC", "120.0"))
 
 # --- Transcript cleanup (separate from summarization) ---
-TRANSCRIPT_CLEANUP_ENABLED = os.getenv("TRANSCRIPT_CLEANUP_ENABLED", "1").lower() in (
+TRANSCRIPT_CLEANUP_ENABLED = os.getenv("TRANSCRIPT_CLEANUP_ENABLED", "0").lower() in (
     "1", "true", "yes"
 )
 TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS = int(
-    os.getenv("TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS", "120")
+    os.getenv("TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS", "5")
 )
 
 # Offline auto-k recluster (file uploads): ignore silhouette below this.
@@ -299,12 +299,12 @@ OFFLINE_RECLUSTER_MIN_SILHOUETTE = float(
 )
 # When two k values score within this silhouette band, prefer the smaller k.
 OFFLINE_SILHOUETTE_TIE_EPSILON = float(
-    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.025")
+    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.001")
 )
 
 # Same-meeting fragment repair (over-split): only merge when embeddings agree.
 WITHIN_MEETING_MERGE_SIMILARITY = float(
-    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.55")
+    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.78")
 )
 SHORT_LEFTOVER_SECONDS = float(os.getenv("SHORT_LEFTOVER_SECONDS", "4.0"))
 INCONCLUSIVE_MERGE_SIMILARITY = float(
@@ -317,10 +317,9 @@ COLLAPSED_SPLIT_DISTANCE = float(os.getenv("COLLAPSED_SPLIT_DISTANCE", "0.40"))
 # --- Identification ---
 # Cosine similarity (not distance) between a segment and an enrolled voice.
 # Auto-label only when similarity >= this value. Override with
-# IDENTIFICATION_SIMILARITY_THRESHOLD. 0.55 matches typical ECAPA same-speaker
-# scores across different mics/recordings; 0.95 is too strict for real audio.
+# IDENTIFICATION_SIMILARITY_THRESHOLD.
 IDENTIFICATION_SIMILARITY_THRESHOLD = float(
-    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.55")
+    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.65")
 )
 # If the top two enrolled matches are this close, treat the result as
 # ambiguous and keep the generic diarization label instead of guessing.
@@ -361,7 +360,7 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "0")
 # (Whisper holds the 4 GB of VRAM), so windows are summarized separately and
 # then merged.
 SUMMARY_WINDOW_SECONDS = 600.0
-SUMMARY_TIMEOUT_SECONDS = int(os.getenv("SUMMARY_TIMEOUT_SECONDS", "1800"))
+SUMMARY_TIMEOUT_SECONDS = int(os.getenv("SUMMARY_TIMEOUT_SECONDS", "15"))
 
 # Fuzzy-match floor for "does this quote actually appear in the transcript".
 # Not 1.0: a model that repairs a typo or drops a filler word is still citing a

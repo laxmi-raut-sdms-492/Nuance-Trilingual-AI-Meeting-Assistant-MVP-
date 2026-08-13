@@ -118,7 +118,7 @@ def pick_speaker_count(
     # Prefer the smallest k whose silhouette is nearly as good — stops inventing
     # a 6th/7th speaker when k=5 fits almost as well (common on real meetings).
     close = [row for row in scores if row[1] >= peak_score - SILHOUETTE_TIE_EPSILON]
-    best_k, best_score, best_assignment = min(close, key=lambda row: row[0])
+    best_k, best_score, best_assignment = max(close, key=lambda row: row[1])
 
     if best_score < min_score:
         logger.info(
@@ -378,14 +378,28 @@ def recluster_from_embeddings(
 
     if picked is not None:
         best_k, best_score, assignment = picked
-        info.update(
-            {
-                "k": best_k,
-                "silhouette": round(best_score, 3),
-                "streaming_k": streaming_label_count,
-                "source": "silhouette",
-            }
-        )
+        if best_k < streaming_label_count:
+            logger.info(
+                f"offline recluster: silhouette picked k={best_k} < streaming_k={streaming_label_count} "
+                f"— keeping streaming speaker clusters"
+            )
+            assignment = streaming_assignment.copy()
+            info.update(
+                {
+                    "streaming_k": streaming_label_count,
+                    "source": "streaming",
+                    "reason": "streaming_k_higher",
+                }
+            )
+        else:
+            info.update(
+                {
+                    "k": best_k,
+                    "silhouette": round(best_score, 3),
+                    "streaming_k": streaming_label_count,
+                    "source": "silhouette",
+                }
+            )
     else:
         assignment = streaming_assignment.copy()
         info.update(

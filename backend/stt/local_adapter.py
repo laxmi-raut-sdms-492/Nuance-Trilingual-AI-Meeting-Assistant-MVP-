@@ -22,3 +22,10 @@ from __future__ import annotations
 from stt.local.local_adapter import LocalSTTAdapter
 
 __all__ = ["LocalSTTAdapter"]
+
+# origin/master fixed the same outage by adding the missing properties to the
+# copy that lived here. That works, but it leaves two full implementations of
+# one class behind two import paths — which is the condition that produced the
+# outage in the first place, since only one of them stayed current. Keeping the
+# re-export instead: both of its fixes are already present in the packaged
+# implementation, and now there is nothing left to drift.

@@ -9,7 +9,7 @@ import pytest
 
 from config import SAMPLE_RATE
 from models.asr import transcribe
-from models.text_lang_id import classify_text_language
+from models.text_lang_id import classify_text_language, TEXT_LANG_MIN_CONFIDENCE
 
 
 def _tone(seconds: float = 2.0) -> np.ndarray:
@@ -125,3 +125,50 @@ def test_plain_english_is_not_overridden():
 
     assert result["language"] == "en"
     assert result["text"] == "My name is Saloni"
+
+
+# --------------------------------------------------- English word collisions
+#
+# Romanization collides with English, and the collisions were common words.
+# "the" sat in the Hindi set for थे, so any English sentence containing it
+# scored Hindi 1 / Marathi 0 — unanimous, confidence 1.0 — and the caller
+# re-decoded the line with Indic Conformer, which returns Devanagari for
+# whatever it is given. Ordinary English came back transliterated.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "the deadline is Friday",
+        "please review the main document",
+        "that was a mere formality",
+        "let us hum through the agenda",
+        "the maze of approvals is the problem",
+        "put it in the pan for now",
+    ],
+)
+def test_english_sentences_are_never_classified_as_indic(text):
+    """
+    Each of these contains a word that used to be a marker. A word English
+    also uses cannot be evidence for Hindi or Marathi — seeing it does not
+    make either more likely than the other.
+    """
+    guess, _confidence = classify_text_language(text)
+    assert guess == "en", f"{text!r} was classified {guess!r}"
+
+
+def test_a_collision_word_does_not_outvote_real_marathi():
+    """Removing the collisions must not cost real evidence sitting beside them."""
+    guess, confidence = classify_text_language("the mala udya bhetu ya ahe")
+    assert guess == "mr"
+    assert confidence >= TEXT_LANG_MIN_CONFIDENCE
+
+
+def test_devanagari_still_decides_on_a_single_marker():
+    """
+    No minimum hit count was introduced. Native script cannot collide with
+    English, so one marker remains conclusive there.
+    """
+    guess, confidence = classify_text_language("सलोनी आहे")
+    assert guess == "mr"
+    assert confidence >= TEXT_LANG_MIN_CONFIDENCE

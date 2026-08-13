@@ -145,9 +145,29 @@ def _try_indic_conformer_recovery(
     if not INDIC_CONFORMER_ENABLED or current_language in ASR_DEVANAGARI_LANGUAGES:
         return current_text, current_language
 
-    indic_candidates = ["mr", "hi"]
-    if hint_language in ("mr", "hi"):
-        indic_candidates = [hint_language, "mr" if hint_language == "hi" else "hi"]
+    # Require lexical evidence that this "English" is really romanized Hindi or
+    # Marathi before re-decoding it.
+    #
+    # Without this guard the function replaces EVERY English segment. Indic
+    # Conformer answers in Devanagari whatever audio it is handed, and
+    # Devanagari output always satisfies _is_script_mismatch for an Indic
+    # language — so the acceptance test below cannot reject anything, and the
+    # first candidate always wins. Correct English came back as a Devanagari
+    # transliteration of itself.
+    #
+    # classify_text_language reads romanized Marathi/Hindi function words
+    # ("mala", "ahe", "hai"), which is exactly the signal that distinguishes
+    # "Whisper transliterated Marathi speech" from "this is genuinely English".
+    guess, confidence = classify_text_language(current_text or "")
+    if guess not in ("hi", "mr") or confidence < TEXT_LANG_MIN_CONFIDENCE:
+        return current_text, current_language
+
+    # The lexical guess is evidence drawn from these actual words, so it leads;
+    # the meeting-dominant hint only breaks the hi/mr tie behind it.
+    other = "mr" if guess == "hi" else "hi"
+    indic_candidates = [guess, other]
+    if hint_language in ("mr", "hi") and hint_language != guess:
+        indic_candidates = [guess, hint_language]
 
     for cand in indic_candidates:
         try:

@@ -249,6 +249,67 @@ function SummaryProvenance({ engine }) {
   )
 }
 
+/**
+ * Normalises a decision entry to `{ text, quote, sourceTime }`.
+ *
+ * Decisions used to be plain strings; the backend now attaches the verified
+ * transcript line each one came from. This keeps every render site working
+ * whichever shape a given meeting's data happens to be in (old rows summarized
+ * before evidence was tracked still come back as strings).
+ */
+function normalizeDecision(d) {
+  return typeof d === 'string' ? { text: d, quote: null, sourceTime: null } : d
+}
+
+/**
+ * The transcript line an insight was verified against, shown collapsed by
+ * default in tight spaces (the side panel) and expanded where there is room
+ * to make the point (the Insights tab) — see `defaultOpen`.
+ *
+ * This is the piece that makes a decision or action item traceable rather
+ * than a bare claim: every one on screen survived a citation check against
+ * this exact line (see models/summarizer.py:verify_quote), and the point of
+ * showing it is to let the reader check that themselves instead of trusting
+ * the extraction.
+ */
+function Evidence({ quote, time, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
+  if (!quote) return null
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="font-meta-data text-meta-data text-text-faint hover:text-primary transition-colors flex items-center gap-1"
+      >
+        <Icon name={open ? 'expand_less' : 'format_quote'} className="text-[14px]" />
+        {open ? 'Hide source line' : 'Show source line'}
+      </button>
+      {open && (
+        <blockquote className="mt-1.5 pl-3 border-l-2 border-border font-meta-data text-meta-data text-text-muted italic leading-relaxed">
+          {time && <span className="text-text-faint not-italic mr-1.5">[{time}]</span>}
+          &ldquo;{quote}&rdquo;
+        </blockquote>
+      )}
+    </div>
+  )
+}
+
+/** Section header for the Insights tab — same visual language as SidePanel's
+ * header, without the decorative background (this sits in the main column,
+ * which already has its own card chrome). */
+function InsightSection({ icon, iconClass = 'text-primary', title, children }) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <Icon name={icon} className={iconClass} />
+        <h3 className="font-sidebar-header text-sidebar-header text-text-primary">{title}</h3>
+      </div>
+      {children}
+    </div>
+  )
+}
+
 function ProcessingSkeleton() {
   return (
     <div className="flex flex-col gap-8" aria-hidden="true">
@@ -726,143 +787,99 @@ export default function MeetingDetails() {
                 />
               ))}
 
-            {activeTab === 'Insights' && (
-            <div className="flex flex-col gap-6">
+            {activeTab === 'Insights' &&
+              (() => {
+                const hasInsights =
+                  meeting.decisions?.length > 0 ||
+                  meeting.actionItems?.length > 0 ||
+                  meeting.keywords?.length > 0
 
-              {/* AI Summary */}
-              {meeting.summary && (
-                <section>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Icon name="auto_awesome" className="text-primary" />
-                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-                      AI Summary
-                    </h3>
-                  </div>
+                if (!hasInsights) {
+                  return (
+                    <EmptyState
+                      icon="lightbulb"
+                      title="No insights generated"
+                      subtitle={
+                        processing
+                          ? 'Decisions, action items and keywords are extracted once transcription finishes.'
+                          : "The summarization pass found nothing here — either no local model was reachable, or nothing it proposed could be verified against the transcript. This panel stays empty rather than showing invented content."
+                      }
+                    />
+                  )
+                }
 
-                  <p className="font-transcript-body text-transcript-body text-text-primary leading-relaxed">
-                    {meeting.summary}
-                  </p>
-                </section>
-              )}
-
-              {/* Key Decisions */}
-              {meeting.decisions?.length > 0 && (
-                <section>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Icon name="gavel" className="text-processing" />
-                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-                      Key Decisions
-                    </h3>
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    {meeting.decisions.map((decision, index) => (
-                      <div
-                        key={index}
-                        className="flex gap-3 p-3 rounded-lg bg-surface-raised border border-border"
-                      >
-                        <span className="text-processing font-bold">
-                          {index + 1}
-                        </span>
-
-                        <p className="font-meta-data text-meta-data text-text-primary">
-                          {decision}
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {/* Action Items */}
-              {meeting.actionItems?.length > 0 && (
-                <section>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Icon name="task_alt" className="text-success" />
-                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-                      Action Items
-                    </h3>
-                  </div>
-
-                  <div className="flex flex-col gap-2">
-                    {meeting.actionItems.map((item, index) => (
-                      <div
-                        key={index}
-                        className="p-3 rounded-lg bg-surface-raised border border-border"
-                      >
-                        <div className="flex items-start gap-3">
-                          <span className="text-success font-bold">
-                            {index + 1}
-                          </span>
-
-                          <div className="flex-1 min-w-0">
-                            <p className="font-meta-data text-meta-data text-text-primary">
-                              {item.title}
-                            </p>
-
-                            {(item.assignee || item.due) && (
-                              <div className="flex flex-wrap gap-2 mt-1.5">
-                                {item.assignee && (
-                                  <span className="text-text-muted">
-                                    {item.assignee}
-                                  </span>
-                                )}
-
-                                {item.due && (
-                                  <span className="text-text-faint">
-                                    Due: {item.due}
-                                  </span>
-                                )}
+                return (
+                  <div className="flex flex-col gap-8">
+                    <InsightSection icon="gavel" iconClass="text-processing" title="Decisions">
+                      {meeting.decisions?.length > 0 ? (
+                        <div className="flex flex-col gap-4">
+                          {meeting.decisions.map((d, i) => {
+                            const decision = normalizeDecision(d)
+                            return (
+                              <div key={i} className="pl-3 border-l-2 border-border">
+                                <p className="text-text-primary font-transcript-body text-transcript-body">
+                                  {decision.text}
+                                </p>
+                                <Evidence
+                                  quote={decision.quote}
+                                  time={decision.sourceTime}
+                                  defaultOpen
+                                />
                               </div>
-                            )}
-                          </div>
+                            )
+                          })}
                         </div>
-                      </div>
-                    ))}
+                      ) : (
+                        <NotGenerated what="Decision extraction" />
+                      )}
+                    </InsightSection>
+
+                    <InsightSection icon="task_alt" iconClass="text-success" title="Action Items">
+                      {meeting.actionItems?.length > 0 ? (
+                        <div className="flex flex-col gap-4">
+                          {meeting.actionItems.map((a, i) => (
+                            <div
+                              key={i}
+                              className="pl-3 border-l-2"
+                              style={{ borderColor: a.color || 'var(--color-border)' }}
+                            >
+                              <p className="text-text-primary font-transcript-body text-transcript-body">
+                                {a.title}
+                              </p>
+                              {(a.assignee || a.due) && (
+                                <p className="font-meta-data text-meta-data text-text-muted mt-1">
+                                  {[a.assignee, a.due].filter(Boolean).join(' · ')}
+                                </p>
+                              )}
+                              <Evidence quote={a.quote} time={a.sourceTime} defaultOpen />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <NotGenerated what="Action item extraction" />
+                      )}
+                    </InsightSection>
+
+                    <InsightSection icon="key" iconClass="text-primary" title="Keywords">
+                      {meeting.keywords?.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {meeting.keywords.map((k) => (
+                            <span
+                              key={k.word}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
+                            >
+                              {k.word}
+                              <span className="text-text-faint">{k.count}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <NotGenerated what="Keyword extraction" />
+                      )}
+                    </InsightSection>
                   </div>
-                </section>
-              )}
-
-              {/* Key Topics */}
-              {meeting.keywords?.length > 0 && (
-                <section>
-                  <div className="flex items-center gap-2 mb-3">
-                    <Icon name="sell" className="text-primary" />
-                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-                      Key Topics
-                    </h3>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
-                    {meeting.keywords.map((keyword) => (
-                      <span
-                        key={keyword.word}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
-                      >
-                        {keyword.word}
-                        <span className="text-text-faint">
-                          {keyword.count}
-                        </span>
-                      </span>
-                    ))}
-                  </div>
-                </section>
-              )}
-
-              {/* Nothing generated */}
-              {!meeting.summary &&
-                !meeting.decisions?.length &&
-                !meeting.actionItems?.length &&
-                !meeting.keywords?.length && (
-                  <EmptyState
-                    icon="lightbulb"
-                    title="No insights generated"
-                    subtitle="No traceable insights were found in this meeting."
-                  />
-                )}
-
-            </div>
-          )}
+                )
+              })()}
           </div>
         </div>
 
@@ -958,6 +975,7 @@ export default function MeetingDetails() {
                         {[a.assignee, a.due].filter(Boolean).join(' · ')}
                       </p>
                     )}
+                    <Evidence quote={a.quote} time={a.sourceTime} />
                   </div>
                 ))}
               </div>
@@ -968,10 +986,16 @@ export default function MeetingDetails() {
 
           <SidePanel icon="gavel" iconClass="text-processing" title="Key Decisions">
             {meeting.decisions?.length > 0 ? (
-              <ul className="list-disc list-inside font-meta-data text-meta-data text-text-muted flex flex-col gap-2">
-                {meeting.decisions.map((d, i) => (
-                  <li key={i}>{d}</li>
-                ))}
+              <ul className="list-disc list-inside font-meta-data text-meta-data text-text-muted flex flex-col gap-3">
+                {meeting.decisions.map((d, i) => {
+                  const decision = normalizeDecision(d)
+                  return (
+                    <li key={i}>
+                      {decision.text}
+                      <Evidence quote={decision.quote} time={decision.sourceTime} />
+                    </li>
+                  )
+                })}
               </ul>
             ) : (
               <NotGenerated what="Decision extraction" />

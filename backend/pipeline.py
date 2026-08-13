@@ -281,31 +281,6 @@ class MeetingSession:
         for label, name in resolve_names_from_greetings(self.transcript).items():
             resolved.setdefault(label, (name, 1.0))
 
-        # Permanently enroll every resolved voice (needed before re-identify).
-        for label, (name, _conf) in list(resolved.items()):
-            if label not in self.diarizer.clusters:
-                continue
-            try:
-                self.identifier.enroll(
-                    name, self.diarizer.get_centroid(label), overwrite=False
-                )
-                logger.info(f"permanently enrolled voice profile for '{name}'")
-            except Exception as exc:
-                logger.warning(f"finalize enroll '{name}' failed: {exc}")
-
-        # Re-identify leftover clusters against profiles we just enrolled.
-        if self.diarizer.clusters:
-            self.identifier.refresh(force=True)
-            for label in self.diarizer.clusters:
-                if label in resolved:
-                    continue
-                name, conf = self.identifier.identify(self.diarizer.get_centroid(label))
-                if name != UNKNOWN:
-                    resolved[label] = (name, conf)
-                    logger.info(
-                        f"re-identify: {label} -> {name} ({conf:.3f}) after enrollment"
-                    )
-
         # Same-meeting fragment repair via embeddings.
         if self.diarizer.clusters:
             named = {
@@ -328,12 +303,6 @@ class MeetingSession:
                         f"within-meeting merge: {label} -> {best_name} "
                         f"(sim={best_sim:.3f} vs named cluster)"
                     )
-                    try:
-                        self.identifier.enroll(
-                            best_name, centroid, overwrite=False
-                        )
-                    except Exception as exc:
-                        logger.warning(f"merge enroll '{best_name}' failed: {exc}")
 
         # Turn-taking / continuity for short leftovers embeddings couldn't resolve.
         from models.speaker_enrollment import same_meeting_fragment_merges

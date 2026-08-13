@@ -221,7 +221,7 @@ NEW_CLUSTER_EVIDENCE_COUNT = int(os.getenv("NEW_CLUSTER_EVIDENCE_COUNT", "3"))
 NEW_CLUSTER_MARGIN = float(os.getenv("NEW_CLUSTER_MARGIN", "0.08"))
 # When only one cluster exists, dist must exceed spread * this to split.
 SINGLE_CLUSTER_SPLIT_MULTIPLIER = float(
-    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "0.2")
+    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "0.1")
 )
 # Offline: collapse to 1 speaker when p90 pairwise embedding distance is below this.
 SINGLE_SPEAKER_P90_DISTANCE = float(os.getenv("SINGLE_SPEAKER_P90_DISTANCE", "0.38"))
@@ -244,7 +244,7 @@ OFFLINE_RECLUSTER_MIN_SILHOUETTE = float(
 )
 # When two k values score within this silhouette band, prefer the smaller k.
 OFFLINE_SILHOUETTE_TIE_EPSILON = float(
-    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.005")
+    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.001")
 )
 
 # Same-meeting fragment repair (over-split): only merge when embeddings agree.

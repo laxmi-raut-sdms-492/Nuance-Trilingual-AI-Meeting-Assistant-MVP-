@@ -38,9 +38,41 @@ _ADDRESSEE_PATTERNS = (
 )
 
 
+FORBIDDEN_NAME_WORDS = {
+    "everyone",
+    "everybody",
+    "guys",
+    "all",
+    "there",
+    "team",
+    "folks",
+    "sir",
+    "maam",
+    "ma'am",
+    "friend",
+    "friends",
+    "anyone",
+    "anybody",
+    "people",
+    "students",
+    "here",
+    "again",
+    "back",
+    "today",
+    "well",
+    "so",
+    "now",
+    "too",
+    "also",
+    "welcome",
+}
+
+
 def _normalize_person_name(raw: str) -> str | None:
     raw = (raw or "").strip(" .,!?;:'\"")
     if not raw or len(raw) < 2:
+        return None
+    if raw.lower() in FORBIDDEN_NAME_WORDS:
         return None
     if re.search(r"[A-Za-z]", raw):
         return raw.title()

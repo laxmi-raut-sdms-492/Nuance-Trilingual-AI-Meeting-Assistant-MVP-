@@ -257,10 +257,17 @@ class MeetingSession:
         resolved: dict[str, tuple[str, float]] = {}
 
         if self.diarizer.clusters:
+            matches: list[tuple[float, str, str]] = []
             for label in self.diarizer.clusters:
                 name, conf = self.identifier.identify(self.diarizer.get_centroid(label))
                 if name != UNKNOWN:
+                    matches.append((conf, label, name))
+            matches.sort(key=lambda item: item[0], reverse=True)
+            used_names: set[str] = set()
+            for conf, label, name in matches:
+                if name not in used_names:
                     resolved[label] = (name, conf)
+                    used_names.add(name)
 
         # Text hints for labels still unknown.
         for entry in self.transcript:
@@ -633,18 +640,18 @@ class MeetingSession:
         Talk time per speaker, shaped for the details page's bars and the
         dashboard pie: {name, seconds, time, pct, color}.
 
-        Groups by speaker_label (stable diarization id), not display name,
-        so one person is never counted twice after label repair.
+        Grouped by display name so each speaker name appears exactly once,
+        preventing uq_speaker_meeting_name unique constraint violations in DB.
         """
         totals: dict[str, float] = {}
-        labels: dict[str, str] = {}  # label -> display name
         colors: dict[str, str] = {}
+        speaker_labels: dict[str, str] = {}
+
         for entry in self.transcript:
-            label = entry.get("speaker_label") or entry.get("speaker") or "Unknown"
-            display = entry.get("speaker") or label
-            labels[label] = display
-            colors[label] = entry.get("color") or SPEAKER_COLORS[0]
-            totals[label] = totals.get(label, 0.0) + (
+            display = entry.get("speaker") or entry.get("speaker_label") or "Unknown"
+            colors.setdefault(display, entry.get("color") or SPEAKER_COLORS[0])
+            speaker_labels.setdefault(display, entry.get("speaker_label") or display)
+            totals[display] = totals.get(display, 0.0) + (
                 entry["end_sec"] - entry["start_sec"]
             )
 
@@ -654,14 +661,14 @@ class MeetingSession:
 
         return [
             {
-                "name": labels.get(label, label),
-                "speaker_label": label,
+                "name": display_name,
+                "speaker_label": speaker_labels.get(display_name, display_name),
                 "seconds": round(seconds, 1),
                 "time": format_duration(seconds),
                 "pct": round(seconds / grand_total * 100, 1),
-                "color": colors.get(label, SPEAKER_COLORS[0]),
+                "color": colors.get(display_name, SPEAKER_COLORS[0]),
             }
-            for label, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+            for display_name, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
         ]
 
     def participant_count(self) -> int:

@@ -23,6 +23,18 @@ class LocalSTTAdapter(STTAdapter):
     it is local or cloud.
     """
 
+    @property
+    def adapter_type(self) -> str:
+        return "local"
+
+    @property
+    def provider_name(self) -> str:
+        return "whisper+indic_conformer"
+
+    @property
+    def model_name(self) -> str:
+        return "whisper-medium / indic-conformer-600m"
+
     def transcribe(self, audio: np.ndarray, hint_language: str | None = None) -> dict:
         return _local_asr.transcribe(audio, hint_language=hint_language)
 

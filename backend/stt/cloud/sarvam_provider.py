@@ -9,6 +9,7 @@ import numpy as np
 from scipy.io import wavfile
 
 from config import SAMPLE_RATE, SARVAM_API_KEY, SARVAM_MODEL
+from stt.base import STTProviderError
 
 logger = logging.getLogger("sarvam_provider")
 
@@ -65,7 +66,7 @@ class SarvamProvider:
         hint_language: str | None = None,
     ) -> dict:
         if not self.api_key:
-            raise ValueError(
+            raise STTProviderError(
                 "SARVAM_API_KEY is not configured. Please set SARVAM_API_KEY in backend/.env"
             )
 

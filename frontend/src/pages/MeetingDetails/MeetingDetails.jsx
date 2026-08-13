@@ -731,26 +731,90 @@ export default function MeetingDetails() {
                 />
               ))}
 
-            {activeTab === 'Insights' &&
-              (meeting.keywords?.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {meeting.keywords.map((k) => (
-                    <span
-                      key={k.word}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
-                    >
-                      {k.word}
-                      <span className="text-text-faint">{k.count}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState
-                  icon="lightbulb"
-                  title="No insights generated"
-                  subtitle="Keyword and topic extraction needs the same summarization stage, which isn't built yet."
-                />
-              ))}
+            {activeTab === 'Insights' && (
+              <div className="flex flex-col gap-6">
+                {/* 🚨 Attention Needed */}
+                {meeting.insights?.attentionNeeded?.length > 0 && (
+                  <div className="bg-surface border border-error/30 rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg">🚨</span>
+                        <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Attention Needed</h3>
+                      </div>
+                      <span className="text-xs font-meta-data px-2.5 py-1 rounded-full bg-error/10 text-error border border-error/20">
+                        {meeting.insights.attentionNeeded.length} item{meeting.insights.attentionNeeded.length > 1 ? 's' : ''} need attention
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-2.5">
+                      {meeting.insights.attentionNeeded.map((item, idx) => (
+                        <div key={idx} className="flex items-start gap-2.5 font-meta-data text-meta-data text-text-muted">
+                          <span className="mt-0.5 text-sm">{item.severity === 'red' ? '🔴' : '🟡'}</span>
+                          <span className="leading-relaxed">{item.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ⏳ Pending / Unresolved */}
+                {meeting.insights?.pending?.length > 0 && (
+                  <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-lg">⏳</span>
+                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
+                    </div>
+                    <p className="text-xs font-meta-data text-text-faint mb-3">Track things discussed that require follow-up resolution.</p>
+                    <div className="flex flex-col gap-2">
+                      {meeting.insights.pending.map((pText, idx) => (
+                        <div key={idx} className="flex items-start gap-2.5 font-meta-data text-meta-data text-text-muted">
+                          <span className="text-text-faint text-base">○</span>
+                          <span className="leading-relaxed">{pText}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 📅 Commitments & Deadlines */}
+                {meeting.insights?.commitments?.length > 0 && (
+                  <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-lg">📅</span>
+                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Commitments & Deadlines</h3>
+                    </div>
+                    <div className="flex flex-col gap-3">
+                      {meeting.insights.commitments.map((c, idx) => (
+                        <div key={idx} className="flex flex-col gap-1 p-3 rounded-lg bg-surface-raised border border-border/60">
+                          <span className="text-xs font-semibold text-primary uppercase tracking-wider">{c.timeframe}</span>
+                          <span className="font-meta-data text-meta-data text-text-muted">{c.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 🏷️ Key Topics & Keywords */}
+                {meeting.keywords?.length > 0 && (
+                  <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
+                    <div className="flex items-center gap-2 mb-3">
+                      <Icon name="label" className="text-primary" />
+                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Key Topics & Keywords</h3>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {meeting.keywords.map((k) => (
+                        <span
+                          key={k.word}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
+                        >
+                          {k.word}
+                          <span className="text-text-faint">{k.count}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

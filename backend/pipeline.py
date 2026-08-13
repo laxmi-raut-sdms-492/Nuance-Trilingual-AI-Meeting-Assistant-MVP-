@@ -626,6 +626,17 @@ class MeetingSession:
         if not asr["text"]:
             return None
 
+        text_clean = (asr["text"] or "").strip().lower().rstrip(".!?,")
+        duration = end - start
+        FILLER_HALLUCINATIONS = {
+            "hello", "hi", "thank you", "thanks", "bye", "goodbye",
+            "subtitles by", "subtitles", "amara.org", "blank_audio",
+            "thank you for watching", "see you next time"
+        }
+        if duration < 1.8 and text_clean in FILLER_HALLUCINATIONS:
+            logger.info(f"[{start:.1f}-{end:.1f}s] dropping STT noise hallucination: {asr['text']!r}")
+            return None
+
         self._language_counts[asr["language"]] = self._language_counts.get(asr["language"], 0) + 1
 
         # Voice match first. If nobody is enrolled yet, fall back to an

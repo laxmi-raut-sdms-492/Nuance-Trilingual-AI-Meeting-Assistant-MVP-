@@ -329,7 +329,8 @@ def merge_fragment_clusters(
                     best_dist = dist
                     best_other = other_id
 
-            if best_other is None or best_dist > merge_dist:
+            max_merge_dist = max(merge_dist, 0.65) if (data["seconds"] < 4.0 or data["count"] < 2) else merge_dist
+            if best_other is None or best_dist > max_merge_dist:
                 continue
 
             logger.info(
@@ -460,27 +461,17 @@ def recluster_from_embeddings(
     picked = pick_speaker_count(emb, k_max=k_max, min_score=score_floor)
 
     if picked is not None:
-        best_k, best_score, assignment = picked
-        supported, why = (
-            _reduction_is_supported(emb, streaming_assignment, assignment, transcript)
-            if best_k < streaming_label_count
-            else (True, "no_reduction")
-        )
-
-        if not supported:
-            # The reduction would join voices that do not agree. Streaming
-            # over-splits, so its count is usually too high — but not by so
-            # much that merging strangers is the better error.
+        if streaming_label_count >= 2 and best_k != streaming_label_count:
             logger.info(
-                f"offline recluster: silhouette picked k={best_k} < streaming_k={streaming_label_count} "
-                f"but the implied merge was rejected ({why}) — keeping streaming speaker clusters"
+                f"offline recluster: silhouette picked k={best_k} != streaming_k={streaming_label_count} "
+                f"— keeping streaming speaker clusters"
             )
             assignment = streaming_assignment.copy()
             info.update(
                 {
                     "streaming_k": streaming_label_count,
                     "source": "streaming",
-                    "reason": why,
+                    "reason": "keep_streaming_k",
                 }
             )
         else:

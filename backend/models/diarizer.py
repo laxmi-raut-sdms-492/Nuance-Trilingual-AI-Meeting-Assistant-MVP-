@@ -187,8 +187,8 @@ class SessionDiarizer:
             if best_dist < adaptive:
                 return True
 
-        # Short segment with moderate distance — wait for more evidence.
-        if duration < MIN_NEW_CLUSTER_SECONDS * 1.5 and margin < NEW_CLUSTER_MARGIN * 2:
+        # Short segment (< 1.8s) requires strong distance (> 0.85) to mint a new speaker cluster.
+        if duration < 1.8 and best_dist < 0.85:
             return True
 
         return False

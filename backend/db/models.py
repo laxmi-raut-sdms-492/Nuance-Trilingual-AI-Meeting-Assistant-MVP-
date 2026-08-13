@@ -34,6 +34,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -110,9 +111,8 @@ class Meeting(Base):
     # created before this column existed keep working with zero migration
     # data-fixup and unambiguously mean "local, as before".
     processing_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
-    # Only meaningful when processing_mode="cloud". NULL falls back to
-    # config.CLOUD_STT_DEFAULT_PROVIDER ("sarvam" today).
     stt_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    insights: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     transcript_lines: Mapped[list[TranscriptLine]] = relationship(
         back_populates="meeting",

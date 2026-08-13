@@ -60,6 +60,7 @@ _MEETING_FIELDS = {
     "summaryEngine": "summary_engine",
     "processingMode": "processing_mode",
     "sttProvider": "stt_provider",
+    "insights": "insights",
 }
 
 
@@ -117,6 +118,7 @@ def _to_dict(meeting: Meeting) -> dict:
         # so the frontend/API never needs its own copy of the default.
         "processingMode": meeting.processing_mode or DEFAULT_PROCESSING_MODE,
         "sttProvider": meeting.stt_provider,
+        "insights": meeting.insights,
         "languages": [
             {"code": l.code, "name": l.name, "seconds": l.seconds, "pct": l.pct}
             for l in meeting.languages

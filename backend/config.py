@@ -21,17 +21,17 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 # --- Audio ---
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
-SCD_WINDOW_SECONDS = 1.5
-SCD_HOP_SECONDS = 0.5
-SCD_CHANGE_THRESHOLD = 0.28
-SCD_MIN_SEGMENT_SECONDS = 2.0
-SCD_MIN_SUBSEGMENT_SECONDS = 1.0
+SCD_WINDOW_SECONDS = 0.8
+SCD_HOP_SECONDS = 0.2
+SCD_CHANGE_THRESHOLD = 0.18
+SCD_MIN_SEGMENT_SECONDS = 1.0
+SCD_MIN_SUBSEGMENT_SECONDS = 0.5
 SILENCE_RMS_THRESHOLD = 0.01   # below this average amplitude, treat a segment as silence
 
 # --- Voice Activity Detection (speech segmentation) ---
 # Segments are now bounded by real speech start/pause events (Silero VAD),
 # not a fixed window — this replaces the old CHUNK_SECONDS approach.
-MAX_SEGMENT_SECONDS = 8.0      # force-cut very long uninterrupted speech so latency stays bounded
+MAX_SEGMENT_SECONDS = 25.0      # allow complete sentences to finish at natural pause events
 MIN_SILENCE_MS = 400           # how long a pause must be before a segment is considered "ended"
 # When Silero finds no speech but the file is non-silent, process uploads up to
 # this length as one segment so Whisper sees full context. Longer files are
@@ -266,7 +266,7 @@ CLUSTER_MERGE_CHECK_EVERY = 10              # check for mergeable clusters every
 # 2.0s matches the evidenced config that hits ground truth on clean multi-party.
 MIN_NEW_CLUSTER_SECONDS = float(os.getenv("MIN_NEW_CLUSTER_SECONDS", "2.0"))
 SHORT_FORCE_MATCH_MAX_DISTANCE = float(
-    os.getenv("SHORT_FORCE_MATCH_MAX_DISTANCE", "0.55")
+    os.getenv("SHORT_FORCE_MATCH_MAX_DISTANCE", "0.70")
 )
 # Rolling ECAPA samples kept per speaker cluster for profile matching.
 CLUSTER_PROFILE_MAX_SAMPLES = int(os.getenv("CLUSTER_PROFILE_MAX_SAMPLES", "24"))

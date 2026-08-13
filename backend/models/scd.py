@@ -103,13 +103,17 @@ def _adaptive_change_threshold(distances: list[float]) -> float:
 
 
 def _find_change_points(distances: list[float], window_starts: list[int]) -> list[int]:
-    """Local maxima in the distance sequence that clear the adaptive threshold."""
+    """Local maxima and strong spikes in the distance sequence that clear the threshold."""
     threshold = _adaptive_change_threshold(distances)
     points = []
-    for i in range(1, len(distances) - 1):
-        is_local_max = distances[i] > distances[i - 1] and distances[i] > distances[i + 1]
-        if is_local_max and distances[i] > threshold:
-            change_sample = window_starts[i + 1]
+    for i in range(len(distances)):
+        is_peak = True
+        if i > 0 and distances[i] < distances[i - 1]:
+            is_peak = False
+        if i < len(distances) - 1 and distances[i] < distances[i + 1]:
+            is_peak = False
+        if is_peak and distances[i] > threshold:
+            change_sample = window_starts[i] + HOP_SAMPLES
             points.append(change_sample)
             logger.debug(
                 f"SCD change @ window {i}: dist={distances[i]:.3f} > {threshold:.3f}"

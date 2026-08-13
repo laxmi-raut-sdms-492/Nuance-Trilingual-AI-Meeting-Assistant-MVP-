@@ -118,7 +118,12 @@ def pick_speaker_count(
     # Prefer the smallest k whose silhouette is nearly as good — stops inventing
     # a 6th/7th speaker when k=5 fits almost as well (common on real meetings).
     close = [row for row in scores if row[1] >= peak_score - SILHOUETTE_TIE_EPSILON]
-    best_k, best_score, best_assignment = max(close, key=lambda row: row[1])
+    # Smallest k among the near-ties, as the comment above describes. Taking
+    # the peak score instead makes this line a no-op — `close` is built around
+    # the peak — and on real meetings the peak is routinely a k that has split
+    # one person in two. Whether the reduction this allows is actually taken is
+    # then decided per merge, by _reduction_is_supported.
+    best_k, best_score, best_assignment = min(close, key=lambda row: row[0])
 
     if best_score < min_score:
         logger.info(
@@ -191,6 +196,84 @@ def _dynamic_fragment_merge_distance(centroids: list[np.ndarray]) -> float:
     # Tiny clusters that sit closer than the lower quartile of all voice pairs
     # are usually the same person over-split (e.g. one short reply → Speaker_06).
     return min(CLUSTER_MERGE_DISTANCE, float(np.percentile(dists, 30)))
+
+
+def _reduction_is_supported(
+    embeddings: np.ndarray,
+    streaming_assignment: np.ndarray,
+    offline_assignment: np.ndarray,
+    transcript: list[dict],
+) -> tuple[bool, str]:
+    """
+    Is the offline pass allowed to end up with fewer speakers than streaming?
+
+    Both directions of getting this wrong are real, and they were each seen in
+    a meeting. Streaming over-splits: one person pauses, restarts, and their
+    second half is scored against a young cluster from a short noisy segment,
+    so it opens Speaker_03 — the offline merge exists precisely to undo that.
+    But the merge can also be wrong: two genuinely different people whose
+    voices are somewhat alike get folded into one, and a whole participant
+    disappears from the meeting.
+
+    A blanket rule cannot serve both. Refusing every reduction (which is what
+    "keep the streaming clusters whenever offline wants fewer" amounts to)
+    disables the correction the offline pass exists to perform; accepting every
+    reduction merges real people.
+
+    So judge the reduction by what it actually merges. Look at each pair of
+    streaming clusters this assignment would join and ask whether their voices
+    agree:
+
+      similarity >= WITHIN_MEETING_MERGE_SIMILARITY  -> the same voice, merge
+      similarity <  INCONCLUSIVE_MERGE_SIMILARITY    -> different people, refuse
+      in between                                     -> merge only if one side
+                                                        is a fragment, i.e.
+                                                        too little speech to
+                                                        stand as a speaker
+
+    The middle band is where the evidence genuinely does not decide, and there
+    the cluster's size breaks the tie: a few seconds in one short segment is
+    the shape of an over-split, not of a participant.
+    """
+    from config import INCONCLUSIVE_MERGE_SIMILARITY, WITHIN_MEETING_MERGE_SIMILARITY
+
+    streaming_stats = _cluster_stats(embeddings, streaming_assignment, transcript)
+    if len(streaming_stats) < 2:
+        return True, "nothing_to_merge"
+
+    total_lines = len(transcript)
+    min_lines = max(2, total_lines // 25)
+    min_seconds = max(3.0, sum(
+        max(float(t.get("end_sec") or 0) - float(t.get("start_sec") or 0), 0)
+        for t in transcript
+    ) / max(total_lines * 2, 1))
+
+    def is_fragment(cid: int) -> bool:
+        data = streaming_stats[cid]
+        return data["count"] < min_lines or data["seconds"] < min_seconds
+
+    # Which streaming clusters each offline cluster would absorb.
+    grouped: dict[int, set[int]] = {}
+    for streaming_cid, offline_cid in zip(streaming_assignment, offline_assignment):
+        grouped.setdefault(int(offline_cid), set()).add(int(streaming_cid))
+
+    for offline_cid, streaming_cids in grouped.items():
+        members = sorted(streaming_cids)
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                a, b = members[i], members[j]
+                similarity = 1.0 - float(
+                    cosine(streaming_stats[a]["centroid"], streaming_stats[b]["centroid"])
+                )
+
+                if similarity >= WITHIN_MEETING_MERGE_SIMILARITY:
+                    continue
+                if similarity < INCONCLUSIVE_MERGE_SIMILARITY:
+                    return False, f"voices_too_far:{similarity:.2f}"
+                if not (is_fragment(a) or is_fragment(b)):
+                    return False, f"inconclusive_and_both_established:{similarity:.2f}"
+
+    return True, "voices_agree"
 
 
 def merge_fragment_clusters(
@@ -378,17 +461,26 @@ def recluster_from_embeddings(
 
     if picked is not None:
         best_k, best_score, assignment = picked
-        if best_k < streaming_label_count:
+        supported, why = (
+            _reduction_is_supported(emb, streaming_assignment, assignment, transcript)
+            if best_k < streaming_label_count
+            else (True, "no_reduction")
+        )
+
+        if not supported:
+            # The reduction would join voices that do not agree. Streaming
+            # over-splits, so its count is usually too high — but not by so
+            # much that merging strangers is the better error.
             logger.info(
                 f"offline recluster: silhouette picked k={best_k} < streaming_k={streaming_label_count} "
-                f"— keeping streaming speaker clusters"
+                f"but the implied merge was rejected ({why}) — keeping streaming speaker clusters"
             )
             assignment = streaming_assignment.copy()
             info.update(
                 {
                     "streaming_k": streaming_label_count,
                     "source": "streaming",
-                    "reason": "streaming_k_higher",
+                    "reason": why,
                 }
             )
         else:

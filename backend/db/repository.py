@@ -155,9 +155,19 @@ def _to_dict(meeting: Meeting) -> dict:
             }
             for t in meeting.transcript_lines
         ],
-        "decisions": [d.text for d in meeting.decisions],
+        "decisions": [
+            {"text": d.text, "quote": d.quote, "sourceTime": d.source_time}
+            for d in meeting.decisions
+        ],
         "actionItems": [
-            {"title": a.title, "assignee": a.assignee, "due": a.due, "color": a.color}
+            {
+                "title": a.title,
+                "assignee": a.assignee,
+                "due": a.due,
+                "color": a.color,
+                "quote": a.quote,
+                "sourceTime": a.source_time,
+            }
             for a in meeting.action_items
         ],
         "keywords": [{"word": k.word, "count": k.count} for k in meeting.keywords],
@@ -250,8 +260,16 @@ def _apply_children(session, meeting: Meeting, record: dict):
         ]
 
     if "decisions" in record:
+        # Accepts either the current {"text", "quote", "sourceTime"} shape or a
+        # bare string, so a caller that only ever produced plain text (an old
+        # tool script, a hand-written fixture) still writes cleanly.
         pending["decisions"] = [
-            Decision(position=i, text=d if isinstance(d, str) else str(d))
+            Decision(
+                position=i,
+                text=d.get("text", "") if isinstance(d, dict) else str(d),
+                quote=d.get("quote") if isinstance(d, dict) else None,
+                source_time=d.get("sourceTime") if isinstance(d, dict) else None,
+            )
             for i, d in enumerate(record["decisions"] or [])
         ]
 
@@ -263,6 +281,8 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 assignee=a.get("assignee"),
                 due=a.get("due"),
                 color=a.get("color"),
+                quote=a.get("quote"),
+                source_time=a.get("sourceTime"),
             )
             for i, a in enumerate(record["actionItems"] or [])
         ]

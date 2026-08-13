@@ -8,11 +8,19 @@ foreign key. `transcript`, `speakerStats`, `languages`, `decisions`,
 `actionItems` and `keywords` were all arrays inside one blob; each is now
 ordered, indexed and independently queryable.
 
-`decisions`, `action_items` and `keywords` are modelled even though nothing
-populates them yet — the summarization stage that would fill them is not built.
-They exist so that stage has somewhere to write without another migration, and
-so the API contract (which already returns those keys as empty lists) is
-backed by something real.
+`decisions`, `action_items` and `keywords` are filled in by the summarization
+stage (`models/summarizer.py`) once a meeting finishes transcribing. A meeting
+that has not been summarized yet (still processing, or the summarizer produced
+nothing usable) simply has empty collections here — the API contract already
+returns those keys as empty lists in that case.
+
+`decisions.quote` / `action_items.quote` are the verbatim transcript line each
+item was verified against (see `summarizer.verify_quote`); `source_time` is
+that line's display timestamp. Both are nullable because the extractive
+fallback engine sets quote equal to the item's own text (it never proposes
+anything the transcript didn't literally say), while older rows written before
+this column existed have neither. The UI uses them to show *why* an insight is
+on screen, not just that it is.
 
 Ordering is explicit via a `position` column rather than relying on insertion
 order, because SQL makes no ordering guarantee without ORDER BY. Speaker colours
@@ -284,9 +292,8 @@ class MeetingLanguage(Base):
 
 
 # --- Summarization outputs -------------------------------------------------
-# Nothing writes to these yet. They are here so the stage that eventually does
-# needs no schema change, and so the API's empty arrays are backed by tables
-# rather than by hardcoded [].
+# Written by models/summarizer.py via db/repository.py:_apply_children once a
+# meeting's transcript has been summarized.
 
 
 class Decision(Base):
@@ -298,6 +305,10 @@ class Decision(Base):
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    # The exact transcript line this decision was verified against. Nullable
+    # only for rows written before this column existed.
+    quote: Mapped[str | None] = mapped_column(Text)
+    source_time: Mapped[str | None] = mapped_column(String(32))
 
     meeting: Mapped[Meeting] = relationship(back_populates="decisions")
 
@@ -319,6 +330,9 @@ class ActionItem(Base):
     assignee: Mapped[str | None] = mapped_column(String(255))
     due: Mapped[str | None] = mapped_column(String(64))
     color: Mapped[str | None] = mapped_column(String(16))
+    # Same provenance fields as Decision.quote / Decision.source_time above.
+    quote: Mapped[str | None] = mapped_column(Text)
+    source_time: Mapped[str | None] = mapped_column(String(32))
 
     meeting: Mapped[Meeting] = relationship(back_populates="action_items")
 

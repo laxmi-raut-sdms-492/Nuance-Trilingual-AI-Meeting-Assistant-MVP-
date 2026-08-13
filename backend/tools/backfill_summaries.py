@@ -96,7 +96,7 @@ def main():
             print(f"  engine    {fields.get('summaryEngine')}")
             print(f"  summary   {fields.get('summary')}")
             for decision in fields.get("decisions") or []:
-                print(f"  decision  {decision}")
+                print(f"  decision  {decision['text']}")
             for action in fields.get("actionItems") or []:
                 owner = action.get("assignee") or "unassigned"
                 print(f"  action    {action['title']}  ({owner})")

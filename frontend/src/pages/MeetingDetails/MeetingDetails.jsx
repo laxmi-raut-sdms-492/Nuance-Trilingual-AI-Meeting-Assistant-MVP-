@@ -726,26 +726,143 @@ export default function MeetingDetails() {
                 />
               ))}
 
-            {activeTab === 'Insights' &&
-              (meeting.keywords?.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {meeting.keywords.map((k) => (
-                    <span
-                      key={k.word}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
-                    >
-                      {k.word}
-                      <span className="text-text-faint">{k.count}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <EmptyState
-                  icon="lightbulb"
-                  title="No insights generated"
-                  subtitle="Keyword and topic extraction needs the same summarization stage, which isn't built yet."
-                />
-              ))}
+            {activeTab === 'Insights' && (
+            <div className="flex flex-col gap-6">
+
+              {/* AI Summary */}
+              {meeting.summary && (
+                <section>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Icon name="auto_awesome" className="text-primary" />
+                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+                      AI Summary
+                    </h3>
+                  </div>
+
+                  <p className="font-transcript-body text-transcript-body text-text-primary leading-relaxed">
+                    {meeting.summary}
+                  </p>
+                </section>
+              )}
+
+              {/* Key Decisions */}
+              {meeting.decisions?.length > 0 && (
+                <section>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Icon name="gavel" className="text-processing" />
+                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+                      Key Decisions
+                    </h3>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    {meeting.decisions.map((decision, index) => (
+                      <div
+                        key={index}
+                        className="flex gap-3 p-3 rounded-lg bg-surface-raised border border-border"
+                      >
+                        <span className="text-processing font-bold">
+                          {index + 1}
+                        </span>
+
+                        <p className="font-meta-data text-meta-data text-text-primary">
+                          {decision}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Action Items */}
+              {meeting.actionItems?.length > 0 && (
+                <section>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Icon name="task_alt" className="text-success" />
+                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+                      Action Items
+                    </h3>
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    {meeting.actionItems.map((item, index) => (
+                      <div
+                        key={index}
+                        className="p-3 rounded-lg bg-surface-raised border border-border"
+                      >
+                        <div className="flex items-start gap-3">
+                          <span className="text-success font-bold">
+                            {index + 1}
+                          </span>
+
+                          <div className="flex-1 min-w-0">
+                            <p className="font-meta-data text-meta-data text-text-primary">
+                              {item.title}
+                            </p>
+
+                            {(item.assignee || item.due) && (
+                              <div className="flex flex-wrap gap-2 mt-1.5">
+                                {item.assignee && (
+                                  <span className="text-text-muted">
+                                    {item.assignee}
+                                  </span>
+                                )}
+
+                                {item.due && (
+                                  <span className="text-text-faint">
+                                    Due: {item.due}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Key Topics */}
+              {meeting.keywords?.length > 0 && (
+                <section>
+                  <div className="flex items-center gap-2 mb-3">
+                    <Icon name="sell" className="text-primary" />
+                    <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+                      Key Topics
+                    </h3>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    {meeting.keywords.map((keyword) => (
+                      <span
+                        key={keyword.word}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
+                      >
+                        {keyword.word}
+                        <span className="text-text-faint">
+                          {keyword.count}
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Nothing generated */}
+              {!meeting.summary &&
+                !meeting.decisions?.length &&
+                !meeting.actionItems?.length &&
+                !meeting.keywords?.length && (
+                  <EmptyState
+                    icon="lightbulb"
+                    title="No insights generated"
+                    subtitle="No traceable insights were found in this meeting."
+                  />
+                )}
+
+            </div>
+          )}
           </div>
         </div>
 

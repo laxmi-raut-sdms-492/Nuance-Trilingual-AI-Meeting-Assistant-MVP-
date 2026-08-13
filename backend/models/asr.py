@@ -130,24 +130,60 @@ def detect_language(audio: np.ndarray) -> tuple[str, float]:
     return language_ranking(audio)[0]
 
 
+def _try_indic_conformer_recovery(
+    audio: np.ndarray,
+    current_text: str,
+    current_language: str,
+    duration: float,
+    hint_language: str | None = None,
+) -> tuple[str, str]:
+    """
+    If language was classified as English ('en') but the audio is actually Marathi ('mr')
+    or Hindi ('hi'), attempt IndicConformer decode. If it produces valid Devanagari script,
+    recover the correct Indic language and Devanagari text.
+    """
+    if not INDIC_CONFORMER_ENABLED or current_language in ASR_DEVANAGARI_LANGUAGES:
+        return current_text, current_language
+
+    # Require lexical evidence that this "English" is really romanized Hindi or
+    # Marathi before re-decoding it.
+    #
+    # Without this guard the function replaces EVERY English segment. Indic
+    # Conformer answers in Devanagari whatever audio it is handed, and
+    # Devanagari output always satisfies _is_script_mismatch for an Indic
+    # language — so the acceptance test below cannot reject anything, and the
+    # first candidate always wins. Correct English came back as a Devanagari
+    # transliteration of itself.
+    #
+    # classify_text_language reads romanized Marathi/Hindi function words
+    # ("mala", "ahe", "hai"), which is exactly the signal that distinguishes
+    # "Whisper transliterated Marathi speech" from "this is genuinely English".
+    guess, confidence = classify_text_language(current_text or "")
+    if guess not in ("hi", "mr") or confidence < TEXT_LANG_MIN_CONFIDENCE:
+        return current_text, current_language
+
+    # The lexical guess is evidence drawn from these actual words, so it leads;
+    # the meeting-dominant hint only breaks the hi/mr tie behind it.
+    other = "mr" if guess == "hi" else "hi"
+    indic_candidates = [guess, other]
+    if hint_language in ("mr", "hi") and hint_language != guess:
+        indic_candidates = [guess, hint_language]
+
+    for cand in indic_candidates:
+        try:
+            indic_text = _decode_indic(audio, cand, duration)
+            if indic_text and not _is_script_mismatch(indic_text, cand):
+                logger.info(
+                    f"IndicConformer recovery: replaced Romanized/English decode with Devanagari {cand}: {indic_text!r}"
+                )
+                return indic_text, cand
+        except Exception as exc:
+            logger.debug(f"IndicConformer recovery attempt for {cand} failed: {exc}")
+
+    return current_text, current_language
+
+
 def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
-    """
-    audio: 1-D float32 numpy array, 16kHz mono — one single-speaker segment.
-
-    hint_language: the meeting's dominant language so far. Used only as a
-    fallback when this segment's own detection is too weak to trust, which
-    happens on very short or noisy segments.
-
-    Returns {"text", "language", "language_prob", "language_name",
-             "language_detected", "language_fallback"}.
-    `text` is "" when the segment is judged to be non-speech.
-
-    `language_prob` is always the detector's confidence in `language_detected`,
-    its own top choice. When the fallback fires, `language` differs from
-    `language_detected` and `language_fallback` is True — without that flag a
-    reader sees something like "en (0.70)" and cannot tell that the 0.70
-    belonged to a language which was then thrown away.
-    """
     duration = len(audio) / SAMPLE_RATE
 
     ranked = language_ranking(audio)
@@ -168,6 +204,11 @@ def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
         )
 
     text = _decode(audio, language, duration)
+
+    if language == "en":
+        text, language = _try_indic_conformer_recovery(
+            audio, text, language, duration, hint_language=hint_language
+        )
 
     # A Devanagari language that decoded into Latin script means the decode failed.
     # Retry with the other Devanagari language (hi↔mr) before dropping.
@@ -192,7 +233,7 @@ def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
             language,
             redecode=lambda lang: _decode(audio, lang, duration),
         )
-    
+
     return _result(text, language, detected, prob, used_fallback, ranked)
 
 
@@ -250,10 +291,6 @@ def transcribe_with_context(
     hint_language: str | None = None,
     padding_sec: float | None = None,
 ) -> dict:
-    """
-    Transcribe a time range. English uses Whisper with padded context; Hindi and
-    Marathi use Indic Conformer on the exact segment (no timestamp trimming).
-    """
     pad = ASR_CONTEXT_PADDING_SEC if padding_sec is None else padding_sec
     seg_duration = end_sec - start_sec
     total_sec = len(full_audio) / SAMPLE_RATE
@@ -284,15 +321,6 @@ def transcribe_with_context(
     s1 = min(len(full_audio), int(end_sec * SAMPLE_RATE))
     seg_audio = full_audio[s0:s1]
 
-    # `ranked` above was computed over the PADDED window — up to 8s wider on
-    # each side than the segment. That is the right input for *choosing* a
-    # decode language (more context, better guess) and the wrong input for the
-    # mixed-language flag: a switch anywhere in the neighbourhood would mark
-    # every segment near it as mixed, which is most of them.
-    #
-    # So when the padded window looks ambiguous, re-rank the exact segment and
-    # let that decide the flag. One extra encoder pass, paid only on the
-    # minority of segments that get this far.
     flag_ranked = ranked
     if mixed_language_signal(ranked)[1]:
         flag_ranked = language_ranking(seg_audio)
@@ -311,6 +339,11 @@ def transcribe_with_context(
             abs_start=start_sec,
             abs_end=end_sec,
             clip_start=ctx_start,
+        )
+
+    if language == "en":
+        text, language = _try_indic_conformer_recovery(
+            seg_audio, text, language, seg_duration, hint_language=hint_language
         )
 
     if text and _is_script_mismatch(text, language):
@@ -339,14 +372,14 @@ def transcribe_with_context(
         def _redecode(lang: str) -> str:
             if _uses_indic_conformer(lang):
                 return _decode_indic(seg_audio, lang, seg_duration)
-    
+
             ctx_start = max(0.0, start_sec - pad)
             ctx_end = min(total_sec, end_sec + pad)
             clip = full_audio[
                 int(ctx_start * SAMPLE_RATE): int(ctx_end * SAMPLE_RATE)
             ]
             clip_duration = len(clip) / SAMPLE_RATE
-    
+
             return _decode_whisper(
                 clip,
                 lang,
@@ -355,13 +388,13 @@ def transcribe_with_context(
                 abs_end=end_sec,
                 clip_start=ctx_start,
             )
-    
+
         text, language = _verify_language_from_text(
             text,
             language,
             redecode=_redecode,
         )
-    
+
     return _result(
         text,
         language,
@@ -372,24 +405,126 @@ def transcribe_with_context(
     )
 
 
+def _result_within_window(
+    result: dict,
+    abs_start: float,
+    abs_end: float,
+    clip_start: float,
+) -> dict:
+    """
+    The decode result narrowed to the Whisper segments that overlap the window.
+
+    The hallucination guards read no_speech_prob and avg_logprob off these.
+    Handed the full padded decode they answer a question about eighteen
+    seconds of audio and apply it to two, which is how a fabricated line
+    survives: max(no_speech) comes from the silence, min(avg_logprob) comes
+    from some unrelated struggling stretch, and the pair of conditions the
+    guard needs can no longer both hold.
+
+    Overlap, not midpoint, is right here: a segment only partly inside the
+    window still describes audio the window contains, and for a confidence
+    statistic that is exactly what should be counted.
+    """
+    overlapping = []
+    for seg in result.get("segments") or []:
+        seg_start = clip_start + float(seg.get("start", 0))
+        seg_end = clip_start + float(seg.get("end", 0))
+        if seg_end > abs_start and seg_start < abs_end:
+            overlapping.append(seg)
+
+    if not overlapping:
+        # Nothing lines up — keep the original rather than hand the guards an
+        # empty list, which they read as "no evidence" and always pass.
+        return result
+
+    return {**result, "segments": overlapping}
+
+
+def _words_in_range(
+    result: dict,
+    abs_start: float,
+    abs_end: float,
+    clip_start: float,
+) -> tuple[str, bool]:
+    """
+    Text for one time window, attributed word by word.
+
+    Returns (text, used_word_timestamps). The flag is False when Whisper gave
+    no per-word timing and the caller has to fall back.
+
+    A word lasts a fraction of a second, so "which window was this spoken in"
+    has an unambiguous answer. Whisper's own segments do not — they are
+    sentence-sized, they are chosen by Whisper, and they do not line up with
+    the VAD/SCD/LCD boundaries the pipeline cuts on.
+    """
+    parts: list[str] = []
+    saw_words = False
+
+    for seg in result.get("segments") or []:
+        words = seg.get("words") or []
+        if not words:
+            continue
+        saw_words = True
+        for word in words:
+            start = clip_start + float(word.get("start", 0))
+            end = clip_start + float(word.get("end", 0))
+            middle = (start + end) / 2.0
+            # Half-open, and deliberately without slack. SCD and LCD produce
+            # sub-segments that touch exactly, so any tolerance at all makes
+            # both sides claim a word sitting on the join — turning a torn
+            # sentence into a duplicated one. Half-open windows tile the
+            # timeline, so every word has exactly one owner or none.
+            if abs_start <= middle < abs_end:
+                token = (word.get("word") or "").strip()
+                if token:
+                    parts.append(token)
+
+    return " ".join(parts).strip(), saw_words
+
+
 def _text_for_time_range(
     result: dict,
     abs_start: float,
     abs_end: float,
     clip_start: float,
 ) -> str:
-    """Keep only Whisper segment text overlapping the target time window."""
+    """
+    Text belonging to one segment, out of a decode of a much wider clip.
+
+    This used to keep a whole Whisper segment when its MIDPOINT fell in the
+    window, which loses text and misplaces it. Whisper chooses its own segment
+    boundaries and they do not line up with ours, so a Whisper segment
+    straddling two of our windows is claimed entirely by one of them — and one
+    whose midpoint lands in the silence *between* two windows is claimed by
+    neither and disappears from the meeting for good.
+
+    That is visible in a transcript as a sentence torn in half across two
+    speakers ("...released an alpha" / "software version yet") and as clauses
+    that were spoken but never appear.
+
+    Word timestamps make the question answerable: each word is placed by its
+    own timing, so no word can fall between two windows and none can be
+    counted twice.
+    """
+    text, used_words = _words_in_range(result, abs_start, abs_end, clip_start)
+    if used_words:
+        return text
+
+    # No per-word timing (older Whisper, or a decode that produced none).
+    # Fall back to the segment-midpoint rule — but NEVER to the whole clip:
+    # that returned up to eight seconds of the neighbours' speech as if this
+    # segment had said it, which is how one sentence ends up duplicated under
+    # two different speakers.
     parts: list[str] = []
     for seg in result.get("segments") or []:
         seg_start = clip_start + float(seg.get("start", 0))
         seg_end = clip_start + float(seg.get("end", 0))
-        if seg_end > abs_start + 0.05 and seg_start < abs_end - 0.05:
+        seg_mid = (seg_start + seg_end) / 2.0
+        if abs_start - 0.2 <= seg_mid <= abs_end + 0.2:
             chunk = (seg.get("text") or "").strip()
-            if chunk:
+            if chunk and chunk not in parts:
                 parts.append(chunk)
-    if parts:
-        return " ".join(parts).strip()
-    return (result.get("text") or "").strip()
+    return " ".join(parts).strip()
 
 
 def _uses_indic_conformer(language: str) -> bool:
@@ -466,18 +601,34 @@ def _decode_whisper(
     if language in ASR_DEVANAGARI_LANGUAGES and ASR_BEAM_SIZE > 1:
         decode_kwargs["beam_size"] = ASR_BEAM_SIZE
 
+    windowed = abs_start is not None and abs_end is not None
+    if windowed:
+        # Only worth the extra cost when the decode covers more than the
+        # segment: without per-word timing there is no way to tell which of
+        # this clip's words were actually spoken inside the window.
+        decode_kwargs["word_timestamps"] = True
+
     result = model.transcribe(audio, **decode_kwargs)
 
-    if abs_start is not None and abs_end is not None:
+    if windowed:
         text = _text_for_time_range(result, abs_start, abs_end, clip_start)
         guard_duration = abs_end - abs_start
+        # Judge this segment on this segment's evidence. The decode covers the
+        # segment plus seconds of padding either side, and the guards combine
+        # their inputs with max()/min() across every Whisper segment in it — so
+        # one quiet or one struggling stretch anywhere in the padding decides
+        # the verdict for audio it has nothing to do with. In practice that
+        # disarmed the guards on every padded decode, which is every upload,
+        # and let invented lines like "Hello." through on trailing silence.
+        guard_result = _result_within_window(result, abs_start, abs_end, clip_start)
     else:
         text = result.get("text", "").strip()
         guard_duration = duration
+        guard_result = result
     if not text:
         return ""
 
-    reason = _hallucination_reason(result, text, guard_duration)
+    reason = _hallucination_reason(guard_result, text, guard_duration)
     if reason:
         logger.info(f"dropping likely hallucination ({reason}): {text!r}")
         return ""

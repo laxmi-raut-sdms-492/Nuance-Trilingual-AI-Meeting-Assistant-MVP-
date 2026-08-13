@@ -33,6 +33,7 @@ export const meetingsApi = {
 
   remove: (id) => api.delete(`/meetings/${id}`),
   trash: () => api.get('/meetings/trash'),
+  purgeAll: () => api.delete('/meetings/trash'),
   restore: (id) => api.post(`/meetings/${id}/restore`),
   purge: (id) => api.delete(`/meetings/${id}/purge`),
 

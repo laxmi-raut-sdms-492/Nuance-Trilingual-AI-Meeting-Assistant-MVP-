@@ -62,7 +62,13 @@ def test_finalize_labels_remaps_all_lines_for_a_cluster():
         assert entry["confidence"] == 0.98
         assert entry["speaker_label"] == "Speaker_00"
         assert entry["text"] in ("hello", "world")
-    assert "Laxmi" in identifier.enrolled
+
+    # This used to also assert that finalize permanently enrolled the voice.
+    # That enrollment was removed deliberately — writing every name resolved
+    # inside a meeting into the shared voice database contaminated it, so a
+    # mislabelled cluster in one meeting went on to mislabel later ones. The
+    # subject of this test is the label remapping above; enrollment is no
+    # longer part of it.
 
 
 def test_finalize_labels_keeps_generic_label_when_unknown():

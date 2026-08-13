@@ -100,8 +100,10 @@ export default function MeetingList({ filter }) {
   const [page, setPage] = useState(1)
   const [pendingDelete, setPendingDelete] = useState(null)
   const [pendingPurge, setPendingPurge] = useState(null)
+  const [pendingClearAll, setPendingClearAll] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [purging, setPurging] = useState(false)
+  const [clearingAll, setClearingAll] = useState(false)
   const [restoringId, setRestoringId] = useState(null)
 
   const [trashMeetings, setTrashMeetings] = useState([])
@@ -214,6 +216,25 @@ export default function MeetingList({ filter }) {
       toast.error(describeError(err))
     } finally {
       setPurging(false)
+    }
+  }
+
+  const confirmClearAll = async () => {
+    setClearingAll(true)
+    try {
+      const { data } = await meetingsApi.purgeAll()
+      setTrashMeetings([])
+      setPage(1)
+      toast.success(
+        data.count === 1
+          ? '1 meeting permanently deleted.'
+          : `${data.count} meetings permanently deleted.`
+      )
+      setPendingClearAll(false)
+    } catch (err) {
+      toast.error(describeError(err))
+    } finally {
+      setClearingAll(false)
     }
   }
 
@@ -486,11 +507,27 @@ export default function MeetingList({ filter }) {
               ))}
             </div>
 
-            {/* Pagination renders null for a single page — don't leave an
-                empty bordered strip behind when it does. */}
-            {totalPages > 1 && (
+            {/* Pagination renders null for a single page unless a leading
+                action (e.g. Clear All on Trash) is provided. */}
+            {(totalPages > 1 || isTrash) && (
               <div className="p-4 border-t border-border bg-surface-raised/30">
-                <Pagination page={page} totalPages={totalPages} onChange={setPage} />
+                <Pagination
+                  page={page}
+                  totalPages={totalPages}
+                  onChange={setPage}
+                  leading={
+                    isTrash ? (
+                      <button
+                        type="button"
+                        onClick={() => setPendingClearAll(true)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-error/30 text-error font-label-sm text-label-sm hover:bg-error/10 transition-colors"
+                      >
+                        <Icon name="delete_forever" className="text-[16px]" />
+                        Clear All
+                      </button>
+                    ) : null
+                  }
+                />
               </div>
             )}
           </>
@@ -515,6 +552,16 @@ export default function MeetingList({ filter }) {
         confirmLabel="Delete permanently"
         onConfirm={confirmPurge}
         onCancel={() => setPendingPurge(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingClearAll}
+        busy={clearingAll}
+        title="Clear All Trash"
+        message={`Permanently delete all ${filtered.length} meetings in Trash? Their recordings and transcripts will be removed from the server. This cannot be undone.`}
+        confirmLabel="Clear all"
+        onConfirm={confirmClearAll}
+        onCancel={() => setPendingClearAll(false)}
       />
     </>
   )

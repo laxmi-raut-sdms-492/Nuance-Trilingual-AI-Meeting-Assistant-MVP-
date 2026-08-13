@@ -160,6 +160,8 @@ function NoAudioPanel({ onImportAudio, disabled }) {
   )
 }
 
+const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+
 export default function AudioPlayer({
   meetingId,
   fileName,
@@ -169,12 +171,15 @@ export default function AudioPlayer({
   audioVersion = 0,
 }) {
   const audioRef = useRef(null)
+  const speedMenuRef = useRef(null)
   const [playing, setPlaying] = useState(false)
   const [current, setCurrent] = useState(0)
   const [duration, setDuration] = useState(0)
   const [failed, setFailed] = useState(false)
   const [checking, setChecking] = useState(true)
   const [hasAudio, setHasAudio] = useState(false)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1)
+  const [speedMenuOpen, setSpeedMenuOpen] = useState(false)
 
   const url = meetingId ? meetingsApi.audioUrl(meetingId) : null
   const heights = useMemo(() => barHeights(meetingId), [meetingId])
@@ -192,6 +197,20 @@ export default function AudioPlayer({
   }, [transcript])
 
   const active = useMemo(() => speakerAtTime(segments, current), [segments, current])
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (speedMenuRef.current && !speedMenuRef.current.contains(event.target)) {
+        setSpeedMenuOpen(false)
+      }
+    }
+    if (speedMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [speedMenuOpen])
 
   useEffect(() => {
     setFailed(false)
@@ -228,11 +247,28 @@ export default function AudioPlayer({
     }
   }, [meetingId, url, audioVersion])
 
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = playbackSpeed
+    }
+  }, [playbackSpeed])
+
+  const handleSpeedChange = (speed) => {
+    setPlaybackSpeed(speed)
+    if (audioRef.current) {
+      audioRef.current.playbackRate = speed
+    }
+    setSpeedMenuOpen(false)
+  }
+
   const togglePlay = () => {
     const audio = audioRef.current
     if (!audio) return
     if (playing) audio.pause()
-    else audio.play().catch(() => setFailed(true))
+    else {
+      audio.playbackRate = playbackSpeed
+      audio.play().catch(() => setFailed(true))
+    }
   }
 
   const seekToFraction = (fraction) => {
@@ -276,9 +312,15 @@ export default function AudioPlayer({
           ref={audioRef}
           src={url}
           preload="metadata"
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+          onLoadedMetadata={(e) => {
+            setDuration(e.currentTarget.duration || 0)
+            e.currentTarget.playbackRate = playbackSpeed
+          }}
           onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
-          onPlay={() => setPlaying(true)}
+          onPlay={(e) => {
+            setPlaying(true)
+            e.currentTarget.playbackRate = playbackSpeed
+          }}
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
           onError={() => setFailed(true)}
@@ -336,31 +378,71 @@ export default function AudioPlayer({
         </a>
       </div>
 
-      <div className="flex items-center gap-2 min-h-[1.25rem] px-1">
-        {active ? (
-          <>
-            <span
-              className="w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: active.color }}
-              aria-hidden
-            />
-            <span
-              className="font-label-sm text-label-sm uppercase tracking-wide"
-              style={{ color: active.color }}
-            >
-              {active.speaker}
+      <div className="flex items-center justify-between min-h-[1.25rem] px-1 gap-2">
+        <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+          {active ? (
+            <>
+              <span
+                className="w-2 h-2 rounded-full shrink-0 animate-pulse"
+                style={{ backgroundColor: active.color }}
+                aria-hidden
+              />
+              <span
+                className="font-label-sm text-label-sm uppercase tracking-wide truncate"
+                style={{ color: active.color }}
+              >
+                {active.speaker}
+              </span>
+              <span className="font-meta-data text-meta-data text-text-muted whitespace-nowrap">
+                speaking at {formatTime(current)}
+              </span>
+            </>
+          ) : (
+            <span className="font-meta-data text-meta-data text-text-faint truncate">
+              {segments.length
+                ? 'Seek or play to see who is speaking'
+                : 'No speaker timeline for this recording'}
             </span>
-            <span className="font-meta-data text-meta-data text-text-muted">
-              speaking at {formatTime(current)}
-            </span>
-          </>
-        ) : (
-          <span className="font-meta-data text-meta-data text-text-faint">
-            {segments.length
-              ? 'Seek or play to see who is speaking'
-              : 'No speaker timeline for this recording'}
-          </span>
-        )}
+          )}
+        </div>
+
+        {/* Playback Speed Control */}
+        <div className="relative shrink-0" ref={speedMenuRef}>
+          <button
+            type="button"
+            onClick={() => setSpeedMenuOpen((prev) => !prev)}
+            title="Adjust playback speed"
+            aria-label="Adjust playback speed"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-surface-container-low hover:bg-surface-container-high border border-border/80 text-text-secondary hover:text-text-primary transition-all text-xs font-semibold shadow-xs"
+          >
+            <Icon name="speed" size={16} className="text-primary" />
+            <span>{playbackSpeed}x</span>
+            <Icon name={speedMenuOpen ? 'expand_less' : 'expand_more'} size={14} />
+          </button>
+
+          {speedMenuOpen && (
+            <div className="absolute right-0 bottom-full mb-1.5 z-40 bg-surface border border-border rounded-xl shadow-xl p-1.5 flex flex-col min-w-[110px] animate-in fade-in zoom-in-95 duration-100">
+              <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-text-muted border-b border-border/40 mb-1">
+                Speed
+              </div>
+              {SPEED_OPTIONS.map((spd) => (
+                <button
+                  key={spd}
+                  type="button"
+                  onClick={() => handleSpeedChange(spd)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs text-left flex items-center justify-between transition-colors ${
+                    playbackSpeed === spd
+                      ? 'bg-primary-container text-on-primary-container font-bold'
+                      : 'text-text-primary hover:bg-surface-container-high'
+                  }`}
+                >
+                  <span>{spd}x</span>
+                  {playbackSpeed === spd && <Icon name="check" size={14} />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

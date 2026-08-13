@@ -1,4 +1,4 @@
-import { useParams } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import toast from 'react-hot-toast'
 import Icon from '../../components/common/Icon.jsx'
@@ -329,6 +329,7 @@ function ProcessingSkeleton() {
 
 export default function MeetingDetails() {
   const { id } = useParams()
+  const navigate = useNavigate()
   const { fetchMeeting } = useMeetings()
 
   // The list endpoint omits transcript bodies, so the full record is fetched
@@ -348,7 +349,10 @@ export default function MeetingDetails() {
       setMeeting(await fetchMeeting(id))
       setNotFound(false)
     } catch (err) {
-      if (err?.response?.status === 404) setNotFound(true)
+      if (err?.response?.status === 404) {
+        setMeeting(null)
+        setNotFound(true)
+      }
     } finally {
       setLoading(false)
     }
@@ -365,6 +369,8 @@ export default function MeetingDetails() {
 
   useEffect(() => {
     setLoading(true)
+    setMeeting(null)
+    setNotFound(false)
     autoLabeledRef.current = false
     load()
     loadEnrolled()
@@ -374,10 +380,10 @@ export default function MeetingDetails() {
   // the transcript fills in without the user reloading. This live-filling
   // transcript is the product demo — don't remove the polling.
   useEffect(() => {
-    if (meeting?.status !== 'Processing') return
+    if (notFound || meeting?.status !== 'Processing') return
     const timer = setInterval(load, POLL_INTERVAL_MS)
     return () => clearInterval(timer)
-  }, [meeting?.status, load])
+  }, [notFound, meeting?.status, load])
 
   const handleImportAudio = useCallback(
     async (file, onUploadProgress) => {
@@ -434,6 +440,15 @@ export default function MeetingDetails() {
         icon="search_off"
         title="Meeting not found"
         subtitle="It may have been deleted, or the link is incorrect."
+        action={
+          <button
+            type="button"
+            onClick={() => navigate('/meetings')}
+            className="px-4 py-2 rounded-lg bg-cta hover:bg-primary-container text-on-cta font-label-sm text-label-sm transition-colors"
+          >
+            Back to meetings
+          </button>
+        }
       />
     )
   }

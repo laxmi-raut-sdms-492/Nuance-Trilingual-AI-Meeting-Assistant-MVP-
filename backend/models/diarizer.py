@@ -165,15 +165,7 @@ class SessionDiarizer:
     def _effective_threshold(self, label: str) -> float:
         count = self.clusters[label]["count"]
         growth = min(count * THRESHOLD_GROWTH_PER_SEGMENT, THRESHOLD_GROWTH_CAP)
-        spread = self._cluster_internal_spread(label)
-        # Mature clusters with high internal variation need looser thresholds.
-        spread_bonus = min(spread * 0.8, 0.10)
-        return (
-            DIARIZATION_DISTANCE_THRESHOLD
-            + growth
-            + spread_bonus
-            + self._meeting_adaptive_bonus()
-        )
+        return min(DIARIZATION_DISTANCE_THRESHOLD + growth, 0.58)
 
     def _should_defer_new_cluster(
         self,

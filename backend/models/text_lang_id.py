@@ -96,6 +96,28 @@ _HI_ROMAN = {
     "naam",
 }
 
+# Romanized markers that are also ordinary English words.
+#
+# These have to come back out. Romanization collides with English, and the
+# collisions are not rare words: "the" was carried in _HI_ROMAN for Hindi थे,
+# so a plain English sentence containing "the" scored Hindi 1 / Marathi 0 —
+# a unanimous vote, confidence 1.0 — and callers then re-decoded that line
+# with Indic Conformer, which returns Devanagari for whatever it is handed.
+# "the deadline is Friday" came back as "द डेडलाइन इज फ्रायडे".
+#
+# A marker word only carries information if seeing it makes one language more
+# likely than the other. These do not, so they cannot be evidence.
+_ENGLISH_COLLISIONS = {"the", "main", "mere", "hum", "hu", "ya", "maze", "pan"}
+
+_MR_ROMAN -= _ENGLISH_COLLISIONS
+_HI_ROMAN -= _ENGLISH_COLLISIONS
+
+# Note what is NOT done here: no minimum number of hits. Every romanized marker
+# that survives the subtraction above is a word English does not have, so one
+# of them really is evidence — and demanding two would throw away the short
+# self-introductions this module was written for ("Me Saloni ahe" carries
+# exactly one). The defect was ambiguous words, not insufficient words.
+
 # Split on whitespace/punctuation only. `\w` under Python's Unicode regex
 # excludes Devanagari combining vowel signs (category Mn, e.g. the ी in
 # "मी"), which would otherwise fracture words like "आहे" into "आह" + stray

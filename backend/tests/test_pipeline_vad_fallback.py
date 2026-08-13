@@ -48,7 +48,15 @@ def test_process_audio_uses_fallback_when_vad_emits_nothing(session):
         patch.object(session.segmenter, "process", return_value=[]),
         patch.object(session.segmenter, "flush", return_value=[]),
         patch("pipeline.get_embedding", return_value=fake_embedding),
-        patch("pipeline.transcribe", return_value={
+        patch.object(session.stt_adapter, "transcribe_with_context", return_value={
+            "text": "hello from fallback",
+            "language": "en",
+            "language_name": "English",
+            "language_detected": "en",
+            "language_prob": 0.9,
+            "language_fallback": False,
+        }),
+        patch.object(session.stt_adapter, "transcribe", return_value={
             "text": "hello from fallback",
             "language": "en",
             "language_name": "English",
@@ -79,7 +87,15 @@ def test_process_audio_skips_fallback_when_vad_already_produced_lines(session):
         patch.object(session.segmenter, "process", return_value=[vad_seg]),
         patch.object(session.segmenter, "flush", return_value=[]),
         patch("pipeline.get_embedding", return_value=fake_embedding),
-        patch("pipeline.transcribe", return_value={
+        patch.object(session.stt_adapter, "transcribe_with_context", return_value={
+            "text": "normal vad path",
+            "language": "en",
+            "language_name": "English",
+            "language_detected": "en",
+            "language_prob": 0.9,
+            "language_fallback": False,
+        }),
+        patch.object(session.stt_adapter, "transcribe", return_value={
             "text": "normal vad path",
             "language": "en",
             "language_name": "English",

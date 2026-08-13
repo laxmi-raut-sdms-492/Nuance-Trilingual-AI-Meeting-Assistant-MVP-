@@ -43,6 +43,8 @@ def test_cloud_sarvam_missing_api_key_raises(monkeypatch):
 
 
 def test_cloud_sarvam_resolves_with_api_key(monkeypatch):
+    import sys
+    from unittest.mock import MagicMock
     import stt.sarvam_adapter as sarvam_mod
     from stt.sarvam_adapter import SarvamSTTAdapter
 
@@ -53,13 +55,17 @@ def test_cloud_sarvam_resolves_with_api_key(monkeypatch):
         def __init__(self, *a, **kw):
             pass
 
-    monkeypatch.setattr("sarvamai.SarvamAI", _Fake, raising=False)
+    mock_module = sys.modules.get("sarvamai", MagicMock())
+    mock_module.SarvamAI = _Fake
+    monkeypatch.setitem(sys.modules, "sarvamai", mock_module)
 
     adapter = resolve_stt_adapter("cloud", "sarvam")
     assert isinstance(adapter, SarvamSTTAdapter)
 
 
 def test_cloud_missing_provider_falls_back_to_configured_default(monkeypatch):
+    import sys
+    from unittest.mock import MagicMock
     import stt.resolver as resolver_mod
     import stt.sarvam_adapter as sarvam_mod
 
@@ -70,7 +76,9 @@ def test_cloud_missing_provider_falls_back_to_configured_default(monkeypatch):
         def __init__(self, *a, **kw):
             pass
 
-    monkeypatch.setattr("sarvamai.SarvamAI", _Fake, raising=False)
+    mock_module = sys.modules.get("sarvamai", MagicMock())
+    mock_module.SarvamAI = _Fake
+    monkeypatch.setitem(sys.modules, "sarvamai", mock_module)
 
     from stt.sarvam_adapter import SarvamSTTAdapter
 

@@ -152,6 +152,12 @@ def get_trash():
     return {"meetings": [_without_transcript(m) for m in store.list_trash()]}
 
 
+@router.delete("/meetings/trash")
+def purge_all_trash():
+    count = store.purge_all_trash()
+    return {"status": "purged", "count": count}
+
+
 @router.get("/meetings/{meeting_id}")
 def get_meeting(meeting_id: str):
     meeting = store.get_meeting(meeting_id)
@@ -166,6 +172,7 @@ def create_meeting(
     file: UploadFile = File(...),
     title: str = Form(""),
     agenda: str = Form(""),
+    stt_adapter: str = Form("local"),
     processing_mode: str = Form(""),
     stt_provider: str = Form(""),
 ):
@@ -177,13 +184,7 @@ def create_meeting(
             f"Accepted: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
         )
 
-    processing_mode = processing_mode.strip().lower()
-    stt_provider = stt_provider.strip().lower()
-    if processing_mode and processing_mode not in PROCESSING_MODES:
-        raise HTTPException(
-            400,
-            f"Unknown processing_mode '{processing_mode}'. Expected one of {PROCESSING_MODES}.",
-        )
+    adapter_choice = (stt_adapter or processing_mode or "local").strip().lower()
 
     tmp_path, size = _save_upload_to_temp(file)
 
@@ -208,13 +209,8 @@ def create_meeting(
         "status": "Processing",
         "progress": 0,
         "error": None,
-        # NULL/unset resolves to local (config.DEFAULT_PROCESSING_MODE) —
-        # see stt/resolver.py and db/models.py. Left unset rather than
-        # written as "local" so "the user didn't choose" stays distinguishable
-        # from "the user chose local" if that ever matters later.
-        "processingMode": processing_mode or None,
+        "processingMode": adapter_choice,
         "sttProvider": stt_provider or None,
-        # Filled in by the pipeline once processing finishes.
         "duration": None,
         "durationSeconds": None,
         "participants": None,
@@ -222,9 +218,6 @@ def create_meeting(
         "languages": [],
         "transcript": [],
         "speakerStats": [],
-        # Still empty by design: summary / decisions / action items / keywords
-        # require an LLM pass, which is a separate piece of work. They stay
-        # null rather than being faked.
         "summary": None,
         "decisions": [],
         "actionItems": [],
@@ -232,7 +225,7 @@ def create_meeting(
     }
     store.add_meeting(record)
 
-    background_tasks.add_task(process_meeting, meeting_id)
+    background_tasks.add_task(process_meeting, meeting_id, adapter_choice)
     return record
 
 
@@ -804,7 +797,10 @@ def _generate_summary(meeting_id: str, transcript: list[dict]) -> dict:
         return {}
 
 
-def process_meeting(meeting_id: str):
+from stt.factory import get_stt_adapter
+
+
+def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
     """
     Transcribe one uploaded meeting. Runs in FastAPI's background threadpool
     after the upload response has already been sent.
@@ -820,7 +816,7 @@ def process_meeting(meeting_id: str):
 
     try:
         stt_adapter = resolve_stt_adapter(processing_mode, stt_provider)
-    except STTProviderError as exc:
+    except Exception as exc:
         # Fails the meeting immediately rather than silently falling back to
         # local — e.g. processing_mode=cloud with a missing SARVAM_API_KEY
         # must surface as a clear error, not process under settings the

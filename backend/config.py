@@ -3,7 +3,21 @@
 import os
 from dotenv import load_dotenv
 
+# Load environment variables from .env file
 load_dotenv()
+
+# --- STT Adapter Architecture ---
+STT_ADAPTER = os.getenv("STT_ADAPTER", "local").lower()            # local | cloud
+CLOUD_STT_PROVIDER = os.getenv("CLOUD_STT_PROVIDER", "sarvam").lower()  # sarvam | google
+
+# Sarvam STT Config
+SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")
+SARVAM_MODEL = os.getenv("SARVAM_MODEL", "saaras:v3")
+
+# Google Cloud STT Config
+GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT", "")
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+
 # --- Audio ---
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
@@ -122,6 +136,61 @@ ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY = os.getenv(
     "ASR_MIXED_REQUIRES_SCRIPT_BOUNDARY", "1"
 ).lower() in ("1", "true", "yes")
 
+# --- Language Change Detection (splitting a segment on a code-switch) ---
+#
+# scd.py splits a VAD segment where the SPEAKER changes. This splits it where
+# the LANGUAGE changes, so "The deadline is Friday म्हणजे उद्या" — one breath,
+# no pause, one segment — stops being decoded end to end by a single engine
+# with half the words coming back mangled.
+#
+# Division of labour, and it matters: the LID model below finds WHERE the
+# switch is; it does not decide what the languages are. Whisper's
+# detect_language re-runs on each resulting piece and decides that, because it
+# is markedly better at hi vs mr — VoxLingua107 confuses closely related
+# Indic languages. A cheap model that is only trusted for boundaries can be
+# wrong about the label and still be useful.
+LCD_ENABLED = os.getenv("LCD_ENABLED", "1").lower() in ("1", "true", "yes")
+
+# Spoken-language ID model. ECAPA-TDNN, the same architecture already loaded
+# for speaker embeddings, so this adds a second small model rather than a new
+# class of dependency.
+LID_MODEL_SOURCE = os.getenv(
+    "LID_MODEL_SOURCE", "speechbrain/lang-id-voxlingua107-ecapa"
+)
+
+# Window geometry. Deliberately close to SCD's (1.5s/0.5s): that pass already
+# runs an ECAPA forward per window over every segment ≥2s, so this costs about
+# the same as a stage the pipeline has always paid for. 2.0s rather than 1.5s
+# because language ID needs more phonetic material than speaker ID does.
+LCD_WINDOW_SECONDS = float(os.getenv("LCD_WINDOW_SECONDS", "2.0"))
+LCD_HOP_SECONDS = float(os.getenv("LCD_HOP_SECONDS", "0.5"))
+
+# Below this there is no room for a switch plus two usable pieces.
+LCD_MIN_SEGMENT_SECONDS = float(os.getenv("LCD_MIN_SEGMENT_SECONDS", "3.0"))
+
+# Pieces shorter than this are merged back into a neighbour instead of being
+# emitted. MIN_SPEECH_SECONDS (1.0) is the floor below which Whisper is handed
+# mostly-silence and starts inventing outro captions, so cutting a 0.6s piece
+# out would trade a mangled word for a hallucinated sentence. Keeping it
+# attached leaves the text imperfect but real.
+LCD_MIN_PIECE_SECONDS = float(os.getenv("LCD_MIN_PIECE_SECONDS", "1.5"))
+
+# Mode filter width over the per-window language labels. One window landing on
+# a loanword or a name should not open a new language run.
+LCD_SMOOTHING_WINDOWS = int(os.getenv("LCD_SMOOTHING_WINDOWS", "3"))
+
+# A window whose top posterior is below this says nothing useful; it inherits
+# its predecessor's label rather than voting.
+LCD_MIN_WINDOW_CONFIDENCE = float(os.getenv("LCD_MIN_WINDOW_CONFIDENCE", "0.45"))
+
+# The hop only locates a boundary to within ±hop/2. Speakers pause very
+# briefly when switching language, so the true cut is almost always the
+# quietest instant nearby — search this far either side for it. Nearly free
+# (short-time RMS over a fraction of a second) and worth more than a smaller
+# hop, which would cost a forward pass per window.
+LCD_SNAP_RADIUS_SECONDS = float(os.getenv("LCD_SNAP_RADIUS_SECONDS", "0.75"))
+LCD_SNAP_FRAME_MS = int(os.getenv("LCD_SNAP_FRAME_MS", "20"))
+
 # --- ASR quality guards ---
 #
 # Whisper is an autoregressive decoder with no alignment constraint: nothing
@@ -207,7 +276,7 @@ NEW_CLUSTER_EVIDENCE_COUNT = int(os.getenv("NEW_CLUSTER_EVIDENCE_COUNT", "3"))
 NEW_CLUSTER_MARGIN = float(os.getenv("NEW_CLUSTER_MARGIN", "0.08"))
 # When only one cluster exists, dist must exceed spread * this to split.
 SINGLE_CLUSTER_SPLIT_MULTIPLIER = float(
-    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "1.8")
+    os.getenv("SINGLE_CLUSTER_SPLIT_MULTIPLIER", "0.1")
 )
 # Offline: collapse to 1 speaker when p90 pairwise embedding distance is below this.
 SINGLE_SPEAKER_P90_DISTANCE = float(os.getenv("SINGLE_SPEAKER_P90_DISTANCE", "0.38"))
@@ -217,11 +286,11 @@ TURN_MERGE_MAX_GAP_SEC = float(os.getenv("TURN_MERGE_MAX_GAP_SEC", "2.5"))
 TURN_MAX_DURATION_SEC = float(os.getenv("TURN_MAX_DURATION_SEC", "120.0"))
 
 # --- Transcript cleanup (separate from summarization) ---
-TRANSCRIPT_CLEANUP_ENABLED = os.getenv("TRANSCRIPT_CLEANUP_ENABLED", "1").lower() in (
+TRANSCRIPT_CLEANUP_ENABLED = os.getenv("TRANSCRIPT_CLEANUP_ENABLED", "0").lower() in (
     "1", "true", "yes"
 )
 TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS = int(
-    os.getenv("TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS", "120")
+    os.getenv("TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS", "5")
 )
 
 # Offline auto-k recluster (file uploads): ignore silhouette below this.
@@ -230,12 +299,12 @@ OFFLINE_RECLUSTER_MIN_SILHOUETTE = float(
 )
 # When two k values score within this silhouette band, prefer the smaller k.
 OFFLINE_SILHOUETTE_TIE_EPSILON = float(
-    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.025")
+    os.getenv("OFFLINE_SILHOUETTE_TIE_EPSILON", "0.001")
 )
 
 # Same-meeting fragment repair (over-split): only merge when embeddings agree.
 WITHIN_MEETING_MERGE_SIMILARITY = float(
-    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.55")
+    os.getenv("WITHIN_MEETING_MERGE_SIMILARITY", "0.78")
 )
 SHORT_LEFTOVER_SECONDS = float(os.getenv("SHORT_LEFTOVER_SECONDS", "4.0"))
 INCONCLUSIVE_MERGE_SIMILARITY = float(
@@ -248,10 +317,9 @@ COLLAPSED_SPLIT_DISTANCE = float(os.getenv("COLLAPSED_SPLIT_DISTANCE", "0.40"))
 # --- Identification ---
 # Cosine similarity (not distance) between a segment and an enrolled voice.
 # Auto-label only when similarity >= this value. Override with
-# IDENTIFICATION_SIMILARITY_THRESHOLD. 0.55 matches typical ECAPA same-speaker
-# scores across different mics/recordings; 0.95 is too strict for real audio.
+# IDENTIFICATION_SIMILARITY_THRESHOLD.
 IDENTIFICATION_SIMILARITY_THRESHOLD = float(
-    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.55")
+    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.65")
 )
 # If the top two enrolled matches are this close, treat the result as
 # ambiguous and keep the generic diarization label instead of guessing.
@@ -292,7 +360,7 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "0")
 # (Whisper holds the 4 GB of VRAM), so windows are summarized separately and
 # then merged.
 SUMMARY_WINDOW_SECONDS = 600.0
-SUMMARY_TIMEOUT_SECONDS = int(os.getenv("SUMMARY_TIMEOUT_SECONDS", "1800"))
+SUMMARY_TIMEOUT_SECONDS = int(os.getenv("SUMMARY_TIMEOUT_SECONDS", "15"))
 
 # Fuzzy-match floor for "does this quote actually appear in the transcript".
 # Not 1.0: a model that repairs a typo or drops a filler word is still citing a

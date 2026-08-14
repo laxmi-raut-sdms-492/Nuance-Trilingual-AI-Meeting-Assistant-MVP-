@@ -911,7 +911,7 @@ def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
 
             summary_fields = _generate_summary(meeting_id, session.transcript)
 
-            store.update_meeting(meeting_id, status="Completed", **summary_fields)
+            store.update_meeting(meeting_id, status="Completed", error=None, **summary_fields)
             logger.info(f"[{meeting_id}] done")
 
         except Exception as e:

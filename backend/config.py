@@ -319,7 +319,7 @@ COLLAPSED_SPLIT_DISTANCE = float(os.getenv("COLLAPSED_SPLIT_DISTANCE", "0.40"))
 # Auto-label only when similarity >= this value. Override with
 # IDENTIFICATION_SIMILARITY_THRESHOLD.
 IDENTIFICATION_SIMILARITY_THRESHOLD = float(
-    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.65")
+    os.getenv("IDENTIFICATION_SIMILARITY_THRESHOLD", "0.72")
 )
 # If the top two enrolled matches are this close, treat the result as
 # ambiguous and keep the generic diarization label instead of guessing.

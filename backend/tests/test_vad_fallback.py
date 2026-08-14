@@ -34,10 +34,11 @@ def test_fallback_whole_file_for_short_non_silent_upload():
 
 
 def test_fallback_splits_long_non_silent_upload():
-    duration = 65.0  # above VAD_FALLBACK_WHOLE_FILE_MAX_SECONDS
+    duration = 65.0
     audio = _tone(duration)
     segments = fallback_segments(audio)
-    assert len(segments) == 9  # ceil(65 / 8)
+    import math
+    assert len(segments) == math.ceil(duration / MAX_SEGMENT_SECONDS)
     assert segments[0]["start"] == 0.0
     assert abs(segments[-1]["end"] - duration) < 0.01
 

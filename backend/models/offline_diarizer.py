@@ -47,11 +47,13 @@ def likely_single_speaker(embeddings: np.ndarray) -> bool:
     True when all segment embeddings sit within one voice's natural variation.
     Used to collapse false Speaker_00/Speaker_01 splits on solo recordings.
     """
-    n = len(embeddings)
+    norms = np.linalg.norm(embeddings, axis=1)
+    valid_emb = embeddings[norms > 1e-6]
+    n = len(valid_emb)
     if n < 3:
         return True
     dists = [
-        float(cosine(embeddings[i], embeddings[j]))
+        float(cosine(valid_emb[i], valid_emb[j]))
         for i in range(n)
         for j in range(i + 1, n)
     ]
@@ -87,6 +89,13 @@ def pick_speaker_count(
     """
     from sklearn.cluster import AgglomerativeClustering
     from sklearn.metrics import silhouette_score
+
+    norms = np.linalg.norm(embeddings, axis=1)
+    if np.any(norms < 1e-6):
+        valid_mask = norms > 1e-6
+        if np.sum(valid_mask) < 3:
+            return None
+        embeddings = embeddings[valid_mask]
 
     n = len(embeddings)
     if n < 3:
@@ -172,9 +181,13 @@ def _cluster_stats(
     for cid, data in stats.items():
         idxs = data["indices"]
         stacked = embeddings[idxs]
-        centroid = stacked.mean(axis=0)
-        norm = float(np.linalg.norm(centroid)) + 1e-9
-        data["centroid"] = (centroid / norm).astype(np.float32)
+        valid_stacked = stacked[np.linalg.norm(stacked, axis=1) > 1e-6]
+        if len(valid_stacked) > 0:
+            centroid = valid_stacked.mean(axis=0)
+            norm = float(np.linalg.norm(centroid)) + 1e-9
+            data["centroid"] = (centroid / norm).astype(np.float32)
+        else:
+            data["centroid"] = np.zeros(embeddings.shape[1], dtype=np.float32)
         data["count"] = len(idxs)
     return stats
 
@@ -184,12 +197,13 @@ def _dynamic_fragment_merge_distance(centroids: list[np.ndarray]) -> float:
     Merge threshold derived from how far apart voices actually are in this
     meeting — not a fixed speaker count.
     """
-    if len(centroids) < 2:
+    valid_centroids = [c for c in centroids if np.linalg.norm(c) > 1e-6]
+    if len(valid_centroids) < 2:
         return CLUSTER_MERGE_DISTANCE
     dists = [
-        float(cosine(centroids[i], centroids[j]))
-        for i in range(len(centroids))
-        for j in range(i + 1, len(centroids))
+        float(cosine(valid_centroids[i], valid_centroids[j]))
+        for i in range(len(valid_centroids))
+        for j in range(i + 1, len(valid_centroids))
     ]
     if not dists:
         return CLUSTER_MERGE_DISTANCE
@@ -262,9 +276,12 @@ def _reduction_is_supported(
         for i in range(len(members)):
             for j in range(i + 1, len(members)):
                 a, b = members[i], members[j]
-                similarity = 1.0 - float(
-                    cosine(streaming_stats[a]["centroid"], streaming_stats[b]["centroid"])
-                )
+                cA = streaming_stats[a]["centroid"]
+                cB = streaming_stats[b]["centroid"]
+                if np.linalg.norm(cA) < 1e-6 or np.linalg.norm(cB) < 1e-6:
+                    similarity = 0.5
+                else:
+                    similarity = 1.0 - float(cosine(cA, cB))
 
                 if similarity >= WITHIN_MEETING_MERGE_SIMILARITY:
                     continue
@@ -324,7 +341,12 @@ def merge_fragment_clusters(
             for other_id, other in stats.items():
                 if other_id == cid:
                     continue
-                dist = float(cosine(data["centroid"], other["centroid"]))
+                cA = data["centroid"]
+                cB = other["centroid"]
+                if np.linalg.norm(cA) < 1e-6 or np.linalg.norm(cB) < 1e-6:
+                    dist = 1.0
+                else:
+                    dist = float(cosine(cA, cB))
                 if dist < best_dist:
                     best_dist = dist
                     best_other = other_id
@@ -443,8 +465,20 @@ def recluster_from_embeddings(
         }
     )
 
+    # Filter out zero / uncomputable vectors to prevent "Cosine affinity cannot be used when X contains zero vectors"
+    norms = np.linalg.norm(emb, axis=1)
+    valid_mask = norms > 1e-6
+    valid_indices = np.where(valid_mask)[0]
+
+    if len(valid_indices) < 3:
+        info["reason"] = "insufficient_valid_embeddings"
+        info["streaming_k"] = streaming_label_count
+        return transcript, info
+
+    valid_emb = emb[valid_indices]
+
     # Solo recording guard — do not invent a second speaker from variation.
-    if streaming_label_count > 1 and likely_single_speaker(emb):
+    if streaming_label_count > 1 and likely_single_speaker(valid_emb):
         new_transcript, solo_info = collapse_to_single_speaker(transcript)
         solo_info["streaming_k"] = streaming_label_count
         solo_info["source"] = "single_speaker"
@@ -458,20 +492,36 @@ def recluster_from_embeddings(
         score_floor = max(score_floor, SOLO_SPLIT_MIN_SILHOUETTE)
 
     streaming_assignment = _assignment_from_transcript(transcript)
-    picked = pick_speaker_count(emb, k_max=k_max, min_score=score_floor)
+    picked = pick_speaker_count(valid_emb, k_max=k_max, min_score=score_floor)
 
     if picked is not None:
-        if streaming_label_count >= 2 and best_k != streaming_label_count:
+        best_k, best_score, valid_assignment = picked
+        assignment = streaming_assignment.copy()
+        for idx, v_idx in enumerate(valid_indices):
+            assignment[v_idx] = valid_assignment[idx]
+        zero_indices = np.where(~valid_mask)[0]
+        for z_idx in zero_indices:
+            distances = np.abs(valid_indices - z_idx)
+            closest_valid_idx = valid_indices[np.argmin(distances)]
+            assignment[z_idx] = assignment[closest_valid_idx]
+
+        supported, why = (
+            _reduction_is_supported(emb, streaming_assignment, assignment, transcript)
+            if best_k < streaming_label_count
+            else (True, "no_reduction")
+        )
+
+        if not supported:
             logger.info(
-                f"offline recluster: silhouette picked k={best_k} != streaming_k={streaming_label_count} "
-                f"— keeping streaming speaker clusters"
+                f"offline recluster: silhouette picked k={best_k} < streaming_k={streaming_label_count} "
+                f"but the implied merge was rejected ({why}) — keeping streaming speaker clusters"
             )
             assignment = streaming_assignment.copy()
             info.update(
                 {
                     "streaming_k": streaming_label_count,
                     "source": "streaming",
-                    "reason": "keep_streaming_k",
+                    "reason": why,
                 }
             )
         else:
@@ -514,13 +564,43 @@ def recluster_from_embeddings(
     return new_transcript, info
 
 
+def _embedding_for_line(audio: np.ndarray, start: float, end: float) -> np.ndarray | None:
+    """Extract L2-normalized ECAPA embedding for a single transcript line."""
+    from config import SAMPLE_RATE
+    from models.embedding import get_embedding
+
+    if audio is None or len(audio) == 0:
+        return None
+
+    start_i = max(0, int(start * SAMPLE_RATE))
+    end_i = min(len(audio), int(end * SAMPLE_RATE))
+
+    if end_i <= start_i or (end_i - start_i) < int(0.1 * SAMPLE_RATE):
+        return None
+
+    clip = audio[start_i:end_i]
+    rms = float(np.sqrt(np.mean(clip ** 2)))
+    if rms < 1e-5:
+        return None
+
+    try:
+        vec = get_embedding(clip)
+        if vec is None or np.all(vec == 0) or np.isnan(vec).any():
+            return None
+        norm = float(np.linalg.norm(vec))
+        if norm < 1e-6:
+            return None
+        return (vec / norm).astype(np.float32)
+    except Exception:
+        return None
+
+
 def embed_transcript_lines(
     audio_path: str,
     transcript: list[dict],
 ) -> list[np.ndarray] | None:
     """Compute an ECAPA embedding per transcript line from meeting audio."""
     from audio_utils import load_audio_file
-    from models.speaker_enrollment import embedding_from_segments
 
     try:
         audio = load_audio_file(audio_path)
@@ -532,11 +612,11 @@ def embed_transcript_lines(
     for line in transcript:
         start = float(line.get("start_sec") or 0)
         end = float(line.get("end_sec") or start)
-        emb = embedding_from_segments(audio, [(start, end)])
+        emb = _embedding_for_line(audio, start, end)
         if emb is None:
             embeddings.append(np.zeros(192, dtype=np.float32))
         else:
-            embeddings.append(np.asarray(emb, dtype=np.float32))
+            embeddings.append(emb)
     return embeddings
 
 

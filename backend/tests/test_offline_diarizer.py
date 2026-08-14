@@ -123,3 +123,19 @@ def test_apply_assignment_renumbers_by_first_appearance():
     assert out[0]["speaker_label"] == "Speaker_00"
     assert out[1]["speaker_label"] == "Speaker_01"
     assert out[2]["speaker_label"] == "Speaker_00"
+
+
+def test_recluster_handles_zero_vectors():
+    """Verify that embeddings containing zero vectors do not cause ValueError in cosine distance."""
+    transcript, embs = _make_speakers(n_per=(6, 6, 6))
+    # Inject zero vectors at random indices (e.g. short/silent lines)
+    embs[2] = np.zeros_like(embs[2])
+    embs[7] = np.zeros_like(embs[7])
+
+    # Should not raise ValueError: Cosine affinity cannot be used when X contains zero vectors
+    new_transcript, info = recluster_from_embeddings(
+        transcript, embs, min_score=0.1
+    )
+    assert info is not None
+    assert len(new_transcript) == len(transcript)
+

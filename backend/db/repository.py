@@ -22,6 +22,7 @@ import shutil
 from sqlalchemy import delete, func, inspect, select
 
 from config import AUDIO_DIR, DEFAULT_PROCESSING_MODE
+from models.summarizer import _shorten_action_title
 from db.models import (
     ActionItem,
     Decision,
@@ -157,9 +158,14 @@ def _to_dict(meeting: Meeting) -> dict:
             }
             for t in meeting.transcript_lines
         ],
-        "decisions": [d.text for d in meeting.decisions],
+        "decisions": [_shorten_action_title(d.text, max_words=14) for d in meeting.decisions],
         "actionItems": [
-            {"title": a.title, "assignee": a.assignee, "due": a.due, "color": a.color}
+            {
+                "title": _shorten_action_title(a.title, max_words=10),
+                "assignee": a.assignee,
+                "due": a.due,
+                "color": a.color,
+            }
             for a in meeting.action_items
         ],
         "keywords": [{"word": k.word, "count": k.count} for k in meeting.keywords],

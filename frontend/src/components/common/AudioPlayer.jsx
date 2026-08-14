@@ -218,10 +218,11 @@ export default function AudioPlayer({
     setCurrent(0)
     setDuration(0)
     setChecking(true)
-    setHasAudio(false)
+    setHasAudio(Boolean(url))
 
     if (!url) {
       setChecking(false)
+      setHasAudio(false)
       return
     }
 
@@ -234,8 +235,13 @@ export default function AudioPlayer({
       })
       .catch(() => {
         if (!cancelled) {
-          setHasAudio(false)
-          setFailed(true)
+          if (fileName) {
+            setHasAudio(true)
+            setFailed(false)
+          } else {
+            setHasAudio(false)
+            setFailed(true)
+          }
         }
       })
       .finally(() => {
@@ -245,7 +251,7 @@ export default function AudioPlayer({
     return () => {
       cancelled = true
     }
-  }, [meetingId, url, audioVersion])
+  }, [meetingId, url, fileName, audioVersion])
 
   useEffect(() => {
     if (audioRef.current) {

@@ -281,6 +281,62 @@ def should_merge_turn(
     return True
 
 
+_NON_SPEECH_PATTERN = re.compile(
+    r"^\s*\(?\[?\s*(cough|coughs|snort|laughter|laugh|applause|cheering|throat|clears|gasp|sigh|chuckle|giggle|groan|yawn|whistle|noise|background|music|sound|silence|snicker|muffled)\.?\s*\]?\)?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _clean_and_merge_sandwiched_segments(segments: list[dict]) -> list[dict]:
+    """
+    Fold short sandwiched noise segments or isolated 1-line interruptions (< 2.5s)
+    between the SAME surrounding speaker into the dominant speaker.
+    Stops non-speech sounds ('cough.', '[cough]', etc.) from spawning 1-second fake speakers.
+    """
+    if len(segments) < 2:
+        return segments
+
+    cleaned = [dict(s) for s in segments]
+    n = len(cleaned)
+
+    if n == 2:
+        s0_text = (cleaned[0].get("raw_text") or cleaned[0].get("text") or "").strip()
+        s1_text = (cleaned[1].get("raw_text") or cleaned[1].get("text") or "").strip()
+        spk0 = cleaned[0].get("speaker_label") or cleaned[0].get("speaker")
+        spk1 = cleaned[1].get("speaker_label") or cleaned[1].get("speaker")
+        if _NON_SPEECH_PATTERN.match(s1_text) and spk0:
+            cleaned[1]["speaker_label"] = spk0
+            cleaned[1]["speaker"] = cleaned[0].get("speaker")
+        elif _NON_SPEECH_PATTERN.match(s0_text) and spk1:
+            cleaned[0]["speaker_label"] = spk1
+            cleaned[0]["speaker"] = cleaned[1].get("speaker")
+        return cleaned
+
+    for i in range(n):
+        text = (cleaned[i].get("raw_text") or cleaned[i].get("text") or "").strip()
+        is_noise = bool(_NON_SPEECH_PATTERN.match(text))
+
+        prev_spk = cleaned[i - 1].get("speaker_label") or cleaned[i - 1].get("speaker") if i > 0 else None
+        next_spk = cleaned[i + 1].get("speaker_label") or cleaned[i + 1].get("speaker") if i < n - 1 else None
+        curr_spk = cleaned[i].get("speaker_label") or cleaned[i].get("speaker")
+
+        dur = _seg_seconds(cleaned[i])
+
+        if is_noise:
+            target_spk = prev_spk or next_spk
+            if target_spk and target_spk != curr_spk:
+                cleaned[i]["speaker_label"] = target_spk
+                cleaned[i]["speaker"] = target_spk
+                continue
+
+        if prev_spk and next_spk and prev_spk == next_spk and curr_spk != prev_spk:
+            if dur <= 2.5 or is_noise:
+                cleaned[i]["speaker_label"] = prev_spk
+                cleaned[i]["speaker"] = prev_spk
+
+    return cleaned
+
+
 def build_speaker_turns(
     segments: list[dict],
     *,
@@ -300,6 +356,7 @@ def build_speaker_turns(
     max_dur = max_turn_sec if max_turn_sec is not None else TURN_MAX_DURATION_SEC
 
     ordered = sorted(segments, key=lambda s: float(s.get("start_sec") or 0))
+    ordered = _clean_and_merge_sandwiched_segments(ordered)
     turns: list[dict] = []
     current: dict | None = None
 

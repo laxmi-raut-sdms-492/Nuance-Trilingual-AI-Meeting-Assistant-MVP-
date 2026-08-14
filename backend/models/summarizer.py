@@ -136,10 +136,9 @@ DECISION_CUES = (
     "we decided", "we've decided", "we have decided", "we agreed", "we've agreed",
     "decided to", "agreed to", "final decision", "let's go with", "lets go with",
     "we'll go with", "going with", "we will use", "we'll use", "sign off",
-    "approved", "the plan is", "good one", "that's a good", "okay", "right", "sure",
-    "so what if", "work on", "curriculum",
-    "तय किया", "तय हुआ", "तय कर", "फैसला", "निर्णय", "तय है", "मंजूर", "स्वीकार", "सही", "ठीक है",
-    "ठरवले", "ठरलं", "ठरव", "निर्णय घेतला", "मान्य", "निश्चित", "ठरवायचं", "बरोबर", "काम केलं",
+    "approved", "the plan is", "work on", "curriculum",
+    "तय किया", "तय हुआ", "तय कर", "फैसला", "निर्णय", "तय है", "मंजूर", "स्वीकार", "निश्चित",
+    "ठरवले", "ठरलं", "ठरव", "निर्णय घेतला", "मान्य", "ठरवायचं", "बरोबर",
 )
 
 ACTION_CUES = (
@@ -169,6 +168,47 @@ UNIDENTIFIED = "unknown"
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower().strip(" .,!?-\"'।"))
+
+
+def _shorten_action_title(text: str, max_words: int = 10) -> str:
+    """
+    Trims long rambling transcript quotes into short, concise action titles (max 10 words).
+    Strips conversational fillers ('uh', 'in fact', 'i mean', 'you know', 'well', 'oh', 'really').
+    """
+    if not text:
+        return ""
+
+    cleaned = str(text).strip()
+
+    # Repeatedly strip conversational prefixes / fillers
+    filler_pattern = re.compile(
+        r"^(?:uh|um|oh|well|so|yeah|okay|right|really|in fact|i mean|like|you know|look|listen)[,\s\.-]+",
+        flags=re.IGNORECASE,
+    )
+    while filler_pattern.search(cleaned):
+        cleaned = filler_pattern.sub("", cleaned).strip()
+
+    # Split into sentences, filter out short 1-2 word filler fragments ("really", "oh really", "okay so")
+    raw_sentences = [s.strip() for s in re.split(r"[.!?]+", cleaned) if s.strip()]
+    valid_sentences = [s for s in raw_sentences if len(s.split()) >= 3]
+
+    if valid_sentences:
+        # Prefer a sentence containing action cues/verbs/targets, else the first valid sentence
+        action_sentence = valid_sentences[0]
+        for s in valid_sentences:
+            if any(w in s.lower() for w in ("going to", "will", "need to", "speak to", "get back", "check", "discuss", "call", "meet", "tomorrow", "today", "schedule", "work", "assume", "off", "organiz")):
+                action_sentence = s
+                break
+        cleaned = action_sentence
+    elif raw_sentences:
+        cleaned = raw_sentences[0]
+
+    # Limit to max_words
+    words = cleaned.split()
+    if len(words) > max_words:
+        cleaned = " ".join(words[:max_words]).rstrip(".,;:-") + "..."
+
+    return cleaned.strip(" .,;:-")
 
 
 def _display_name(line: dict) -> str | None:
@@ -448,7 +488,7 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
         for action in window.get("action_items") or []:
             if not isinstance(action, dict):
                 continue
-            title = (action.get("title") or "").strip()
+            title = _shorten_action_title((action.get("title") or "").strip(), max_words=10)
             if not title:
                 continue
             if not verify_quote(action.get("quote") or "", texts):
@@ -570,9 +610,10 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
             decisions.append(text)
         elif any(cue in lowered for cue in ACTION_CUES) and len(actions) < 8:
             speaker = _display_name(line)
+            short_title = _shorten_action_title(text, max_words=10)
             actions.append(
                 {
-                    "title": text,
+                    "title": short_title,
                     # The speaker of the line, not an inferred owner: this engine
                     # knows who talked and nothing more.
                     "assignee": speaker,
@@ -581,28 +622,7 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
                 }
             )
 
-    # Guaranteed Fallback: Ensure EVERY audio file has extracted Decisions & Action Items
-    if not decisions and transcript:
-        for line in reversed(transcript):
-            text = (line.get("text") or "").strip()
-            if text and len(text.split()) >= 3:
-                decisions.append(text)
-                break
 
-    if not actions and transcript:
-        for line in transcript:
-            text = (line.get("text") or "").strip()
-            if text and len(text.split()) >= 3:
-                speaker = _display_name(line)
-                actions.append(
-                    {
-                        "title": text,
-                        "assignee": speaker,
-                        "due": None,
-                        "color": colors.get(_normalize(speaker or "")) if speaker else None,
-                    }
-                )
-                break
 
     multilingual = _build_multilingual_summaries(transcript, summary)
     insights = _extract_insights(transcript, actions, decisions)
@@ -619,84 +639,85 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
 
 def _extract_insights(transcript: list[dict], actions: list[dict], decisions: list[str]) -> dict:
     """
-    Dynamically extract post-meeting insights:
-    - attentionNeeded: Items requiring attention (no confirmed owner, follow-up required).
-    - pending: Unresolved or ongoing items discussed.
-    - commitments: Detected dates, times, and specific commitments.
+    Intelligent NLP Post-Meeting Insights:
+    - attentionNeeded: Items requiring attention (unowned tasks, follow-up required).
+    - pending: Structured unresolved topics (topic, description, owner, status).
+    - commitments: Structured commitments (owner, action, timing).
+    - deadlines: Explicit deadlines stated in conversation.
     """
     attention_needed = []
     pending_items = []
     commitments = []
+    deadlines = []
 
-    seen_texts = set()
+    seen_topics = set()
 
     for line in transcript:
         text = (line.get("text") or "").strip()
         if not text or len(text.split()) < 3:
             continue
         lowered = text.lower()
+        speaker = _display_name(line) or "Team"
 
-        # 1. Detect Attention Needed
-        if any(w in lowered for w in ("no owner", "unassigned", "absent", "absence", "caution", "surprise", "issue", "problem", "concern", "नाही", "काही")):
-            if text not in seen_texts:
-                attention_needed.append({"severity": "red", "text": f"{text[:80]}... — no confirmed owner or needs attention"})
-                seen_texts.add(text)
-        elif any(w in lowered for w in ("follow up", "follow-up", "recap", "check", "confirm", "hope", "agree", "ठरलं", "पाहिजे")):
-            if text not in seen_texts and len(attention_needed) < 4:
-                attention_needed.append({"severity": "yellow", "text": f"{text[:80]}... — follow-up required"})
-                seen_texts.add(text)
-
-        # 2. Detect Commitments & Deadlines
-        timeframe = None
-        if "tomorrow" in lowered or "उद्या" in lowered:
-            timeframe = "Tomorrow"
+        # 1. COMMITMENTS & DEADLINES (Strict temporal extraction - NO audio timestamp hallucinations)
+        timing = None
+        if "next meeting" in lowered or "next time" in lowered:
+            timing = "Next meeting"
+        elif "tomorrow" in lowered or "उद्या" in lowered:
+            timing = "Tomorrow"
         elif "today" in lowered or "आज" in lowered:
-            timeframe = "Today"
-        elif "this week" in lowered or "या आठवड्यात" in lowered or "week" in lowered:
-            timeframe = "This week"
-        elif "next week" in lowered or "monday" in lowered or "friday" in lowered:
-            timeframe = "Upcoming"
+            if any(w in lowered for w in ("minutes", "today", "now", "take the minutes")):
+                timing = "Today / during this meeting"
+        elif "this week" in lowered or "या आठवड्यात" in lowered:
+            timing = "This week"
+        elif "next week" in lowered:
+            timing = "Next week"
 
-        if timeframe and text not in seen_texts:
-            commitments.append({"timeframe": timeframe, "text": text})
-            seen_texts.add(text)
+        if any(w in lowered for w in ("will", "going to", "i'll", "need to", "must", "plan to", "ready to", "present", "take", "bring", "करायचं", "करू", "करना है")):
+            action_title = _shorten_action_title(text, max_words=10)
+            commitments.append({
+                "owner": speaker if speaker and "speaker" not in speaker.lower() else "Team",
+                "action": action_title,
+                "timing": timing or "No explicit deadline stated"
+            })
+            if timing and timing != "No explicit deadline stated":
+                deadlines.append({
+                    "deadline": timing,
+                    "detail": action_title
+                })
 
-        # 3. Detect Pending / Unresolved Items
-        if any(w in lowered for w in ("will", "going to", "need to", "must", "plan to", "करायचं", "करू", "करना है", "होगा")):
-            if text not in seen_texts and len(pending_items) < 5:
-                pending_items.append(text)
-                seen_texts.add(text)
+        # 2. PENDING / UNRESOLVED (Structured topics)
+        if any(w in lowered for w in ("still", "details", "iron out", "work out", "debate", "question", "yet", "unclear", "caution", "wait", "pending", "नाही", "काही")):
+            topic_key = lowered[:30]
+            if topic_key not in seen_topics:
+                seen_topics.add(topic_key)
+                words = text.split()
+                title_text = " ".join(words[:5])
+                pending_items.append({
+                    "topic": title_text,
+                    "description": text,
+                    "owner": speaker if speaker and "speaker" not in speaker.lower() else "Team",
+                    "status": "In progress" if "work" in lowered or "still" in lowered else "Pending"
+                })
 
-    # Dynamic Fallback Guarantees
-    if not attention_needed and actions:
-        for act in actions:
-            t = act.get("title") or ""
-            assignee = act.get("assignee")
-            if not assignee or "speaker" in str(assignee).lower():
-                attention_needed.append({"severity": "red", "text": f"{t} — needs confirmed owner"})
-            else:
-                attention_needed.append({"severity": "yellow", "text": f"{t} — follow-up required"})
-            break
-
-    if not pending_items and transcript:
-        for line in transcript:
-            text = (line.get("text") or "").strip()
-            if text and text not in seen_texts:
-                pending_items.append(text)
-                if len(pending_items) >= 3:
-                    break
-
-    if not commitments and transcript:
-        for line in transcript:
-            text = (line.get("text") or "").strip()
-            if text:
-                commitments.append({"timeframe": "This week", "text": text})
-                break
+        # 3. ATTENTION NEEDED
+        if not speaker or "speaker" in str(speaker).lower() or "unassigned" in lowered or "no owner" in lowered:
+            if any(w in lowered for w in ("need", "must", "should", "critical", "important", "issue", "training", "interview")):
+                attention_needed.append({
+                    "severity": "red",
+                    "text": f"{text[:90]} — has no confirmed owner"
+                })
+        elif any(w in lowered for w in ("follow up", "follow-up", "recap", "check", "confirm", "caution", "hope", "absent", "absence")):
+            attention_needed.append({
+                "severity": "yellow",
+                "text": f"{text[:90]} — follow-up required"
+            })
 
     return {
-        "attentionNeeded": attention_needed[:4],
-        "pending": pending_items[:5],
+        "attentionNeeded": attention_needed[:3],
+        "pending": pending_items[:4],
         "commitments": commitments[:4],
+        "deadlines": deadlines[:3],
     }
 
 
@@ -763,7 +784,6 @@ def summarize(
     if not transcript:
         return {
             "summary": None,
-            "summaries": {"en": "", "hi": "", "mr": ""},
             "decisions": [],
             "actionItems": [],
             "keywords": [],

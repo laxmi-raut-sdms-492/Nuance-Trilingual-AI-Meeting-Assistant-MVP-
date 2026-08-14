@@ -25,7 +25,7 @@ logger = logging.getLogger("speaker_enrollment")
 # Cap how much speech we pull from a meeting when building a profile — enough
 # for a stable ECAPA vector without re-encoding an hour of talk-time.
 MAX_ENROLLMENT_SECONDS = 30.0
-MIN_ENROLLMENT_SECONDS = 0.5
+MIN_ENROLLMENT_SECONDS = 1.5
 
 
 def embedding_from_segments(
@@ -158,8 +158,20 @@ def identify_speakers_in_meeting(
     audio = load_audio_file(audio_path)
     results: list[dict] = []
     for label, segments in by_label.items():
-        embedding = embedding_from_segments(audio, segments)
         old_name = display_by_label.get(label, label)
+        # Never overwrite a human-assigned custom name during auto-identification
+        if old_name and not old_name.startswith("Speaker_") and not old_name.startswith("SPEAKER_") and old_name.lower() != "unknown":
+            results.append(
+                {
+                    "speaker_label": label,
+                    "old_name": old_name,
+                    "identified_as": old_name,
+                    "confidence": 1.0,
+                    "matched": False,
+                }
+            )
+            continue
+        embedding = embedding_from_segments(audio, segments)
         if embedding is None:
             results.append(
                 {

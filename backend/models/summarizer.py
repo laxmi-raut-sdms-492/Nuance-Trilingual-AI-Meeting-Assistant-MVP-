@@ -653,9 +653,11 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
     seen_topics = set()
     seen_attention = set()
 
+    # Filter out small talk, greetings, pleasantries, and polite conversational noise
     PLEASANTRIES = (
         "thank you", "thanks", "good evening", "good morning", "hello", "my name is",
-        "introduce", "valuable", "welcome", "nice to meet", "glad to", "how are you", "sir"
+        "introduce", "valuable", "welcome", "nice to meet", "glad to", "how are you",
+        "sir", "you said", "i hope", "so what if", "just want to"
     )
 
     for line in transcript:
@@ -664,13 +666,13 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
             continue
         lowered = text.lower()
 
-        # Skip pleasantries, introductions, and polite conversation
+        # Skip pleasantries, introductions, and polite small talk
         if any(p in lowered for p in PLEASANTRIES):
             continue
 
         speaker = _display_name(line) or "Team"
 
-        # 1. COMMITMENTS & DEADLINES (Strict temporal extraction - NO audio timestamp hallucinations)
+        # 1. COMMITMENTS & DEADLINES
         timing = None
         if "next meeting" in lowered or "next time" in lowered:
             timing = "Next meeting"
@@ -684,7 +686,7 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
         elif "next week" in lowered:
             timing = "Next week"
 
-        if any(w in lowered for w in ("will", "going to", "i'll", "need to", "must", "plan to", "ready to", "present", "take", "bring", "करायचं", "करू", "करना है")):
+        if any(w in lowered for w in ("will", "going to", "i'll", "need to", "must", "plan to", "ready to", "present", "take", "bring", "speak to", "check", "discuss", "करायचं", "करू", "करना है")):
             action_title = _shorten_action_title(text, max_words=10)
             if action_title and len(action_title.split()) >= 3:
                 commitments.append({
@@ -699,7 +701,7 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
                     })
 
         # 2. PENDING / UNRESOLVED (Structured topics)
-        if any(w in lowered for w in ("still", "iron out", "work out", "debate", "unclear", "caution", "wait", "pending", "नाही", "काही")):
+        if any(w in lowered for w in ("still", "iron out", "work out", "debate", "unclear", "caution", "wait", "pending", "naही", "काही")):
             topic_key = lowered[:30]
             if topic_key not in seen_topics:
                 seen_topics.add(topic_key)
@@ -733,11 +735,31 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
                     "text": f"{short_item} — follow-up required"
                 })
 
+    # 4. GUARANTEED RECALL: Ensure every extracted action item is included in commitments
+    for act in (actions or []):
+        if not isinstance(act, dict):
+            continue
+        act_title = _shorten_action_title(act.get("title") or "", max_words=10)
+        act_owner = act.get("assignee")
+        act_due = act.get("due")
+        if act_title and len(act_title.split()) >= 2:
+            if not any(_normalize(act_title) in _normalize(c.get("action", "")) for c in commitments):
+                commitments.append({
+                    "owner": act_owner if act_owner and not str(act_owner).lower().startswith("speaker_") else "Team",
+                    "action": act_title,
+                    "timing": act_due or "No explicit deadline stated"
+                })
+                if act_due and act_due.lower() not in ("null", "none"):
+                    deadlines.append({
+                        "deadline": act_due,
+                        "detail": act_title
+                    })
+
     return {
-        "attentionNeeded": attention_needed[:3],
-        "pending": pending_items[:4],
-        "commitments": commitments[:4],
-        "deadlines": deadlines[:3],
+        "attentionNeeded": attention_needed[:4],
+        "pending": pending_items[:5],
+        "commitments": commitments[:5],
+        "deadlines": deadlines[:4],
     }
 
 

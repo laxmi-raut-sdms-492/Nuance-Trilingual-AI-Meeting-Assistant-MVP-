@@ -73,7 +73,9 @@ def test_uncited_items_are_dropped():
         }
     ]
     decisions, actions = summarizer._collect_items(windows, transcript)
-    assert decisions == ["Launch postponed"]
+    assert [d["text"] for d in decisions] == ["Launch postponed"]
+    # The stored quote is the real transcript line, not the model's copy of it.
+    assert decisions[0]["quote"] == "We agreed to postpone the launch."
     assert actions == []
 
 
@@ -84,7 +86,7 @@ def test_duplicate_items_across_windows_collapse():
         "action_items": [],
     }
     decisions, _ = summarizer._collect_items([window, dict(window)], transcript)
-    assert decisions == ["Launch postponed"]
+    assert [d["text"] for d in decisions] == ["Launch postponed"]
 
 
 def test_unknown_assignee_is_dropped_but_item_survives():
@@ -104,6 +106,7 @@ def test_unknown_assignee_is_dropped_but_item_survives():
     _, actions = summarizer._collect_items(windows, transcript)
     assert len(actions) == 1
     assert actions[0]["assignee"] is None
+    assert actions[0]["quote"] == "Someone needs to send the report."
 
 
 def test_spoken_assignee_is_kept_and_coloured():
@@ -215,10 +218,15 @@ def test_extractive_finds_cued_decisions_and_actions():
         line("The weather is nice today."),
     ]
     result = summarizer._extractive(transcript, summarizer.keywords(transcript))
-    assert result["decisions"] == ["We decided to postpone the launch until August."]
+    assert [d["text"] for d in result["decisions"]] == [
+        "We decided to postpone the launch until August."
+    ]
+    # Extractive quote == text: it only ever shows a line as itself.
+    assert result["decisions"][0]["quote"] == "We decided to postpone the launch until August."
     assert len(result["actionItems"]) == 1
     # This engine knows who talked and claims nothing more.
     assert result["actionItems"][0]["assignee"] == "Speaker 2"
+    assert result["actionItems"][0]["quote"] == "I will send the revised timeline tomorrow."
 
 
 def test_extractive_invents_nothing_on_a_meeting_with_no_cues():
@@ -295,4 +303,6 @@ def test_summarize_falls_back_to_extractive_when_no_model(monkeypatch):
     transcript = [line("We decided to postpone the launch until August.")]
     result = summarizer.summarize(transcript)
     assert result["summaryEngine"] == "extractive"
-    assert result["decisions"] == ["We decided to postpone the launch until August."]
+    assert [d["text"] for d in result["decisions"]] == [
+        "We decided to postpone the launch until August."
+    ]

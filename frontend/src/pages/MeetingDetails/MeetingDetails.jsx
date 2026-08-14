@@ -223,8 +223,7 @@ function SidePanel({ icon, iconClass = 'text-primary', title, children }) {
 function NotGenerated({ what }) {
   return (
     <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
-      {what} found nothing in this transcript. Every item has to quote the line it came from, and
-      anything that cannot be traced back is discarded rather than shown.
+      {what} found nothing traceable.
     </p>
   )
 }
@@ -247,6 +246,67 @@ function SummaryProvenance({ engine }) {
         ? 'Extracted verbatim from the transcript.'
         : 'AI-generated summary based on the meeting transcript.'}
     </p>
+  )
+}
+
+/**
+ * Normalises a decision entry to `{ text, quote, sourceTime }`.
+ *
+ * Decisions used to be plain strings; the backend now attaches the verified
+ * transcript line each one came from. This keeps every render site working
+ * whichever shape a given meeting's data happens to be in (old rows summarized
+ * before evidence was tracked still come back as strings).
+ */
+function normalizeDecision(d) {
+  return typeof d === 'string' ? { text: d, quote: null, sourceTime: null } : d
+}
+
+/**
+ * The transcript line an insight was verified against, shown collapsed by
+ * default in tight spaces (the side panel) and expanded where there is room
+ * to make the point (the Insights tab) — see `defaultOpen`.
+ *
+ * This is the piece that makes a decision or action item traceable rather
+ * than a bare claim: every one on screen survived a citation check against
+ * this exact line (see models/summarizer.py:verify_quote), and the point of
+ * showing it is to let the reader check that themselves instead of trusting
+ * the extraction.
+ */
+function Evidence({ quote, time, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen)
+  if (!quote) return null
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="font-meta-data text-meta-data text-text-faint hover:text-primary transition-colors flex items-center gap-1"
+      >
+        <Icon name={open ? 'expand_less' : 'format_quote'} className="text-[14px]" />
+        {open ? 'Hide source line' : 'Show source line'}
+      </button>
+      {open && (
+        <blockquote className="mt-1.5 pl-3 border-l-2 border-border font-meta-data text-meta-data text-text-muted italic leading-relaxed">
+          {time && <span className="text-text-faint not-italic mr-1.5">[{time}]</span>}
+          &ldquo;{quote}&rdquo;
+        </blockquote>
+      )}
+    </div>
+  )
+}
+
+/** Section header for the Insights tab — same visual language as SidePanel's
+ * header, without the decorative background (this sits in the main column,
+ * which already has its own card chrome). */
+function InsightSection({ icon, iconClass = 'text-primary', title, children }) {
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <Icon name={icon} className={iconClass} />
+        <h3 className="font-sidebar-header text-sidebar-header text-text-primary">{title}</h3>
+      </div>
+      {children}
+    </div>
   )
 }
 
@@ -453,6 +513,17 @@ export default function MeetingDetails() {
               {meeting.languages?.length > 0 && (
                 <MetaChip icon="translate">
                   {meeting.languages.map((l) => l.code.toUpperCase()).join(', ')}
+                </MetaChip>
+              )}
+              {meeting.processingMode && (
+                <MetaChip icon={meeting.processingMode === 'cloud' ? 'cloud' : 'devices'}>
+                  {meeting.processingMode === 'cloud'
+                    ? `Cloud • ${
+                        meeting.sttProvider
+                          ? meeting.sttProvider.charAt(0).toUpperCase() + meeting.sttProvider.slice(1)
+                          : 'Cloud'
+                      }`
+                    : 'Local Model'}
                 </MetaChip>
               )}
               <MetaChip icon="audio_file">{meeting.fileSizeLabel}</MetaChip>
@@ -714,121 +785,228 @@ export default function MeetingDetails() {
                 />
               ))}
 
-            {activeTab === 'Insights' && (
-              <div className="flex flex-col gap-6">
-                {/* 🚨 Attention Needed */}
-                {meeting.insights?.attentionNeeded?.length > 0 ? (
-                  <div className="bg-surface border border-error/30 rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg">🚨</span>
-                        <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Attention Needed</h3>
-                      </div>
-                      <span className="text-xs font-meta-data px-2.5 py-1 rounded-full bg-error/10 text-error border border-error/20">
-                        {meeting.insights.attentionNeeded.length} item{meeting.insights.attentionNeeded.length > 1 ? 's' : ''} need attention
-                      </span>
-                    </div>
-                    <div className="flex flex-col gap-2.5">
-                      {meeting.insights.attentionNeeded.map((item, idx) => (
-                        <div key={idx} className="flex items-start gap-2.5 font-meta-data text-meta-data text-text-muted">
-                          <span className="mt-0.5 text-sm">{item.severity === 'red' ? '🔴' : '🟡'}</span>
-                          <span className="leading-relaxed">{item.text}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-surface border border-success/30 rounded-xl p-4 flex items-center justify-between shadow-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">🟢</span>
-                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Attention Needed</h3>
-                    </div>
-                    <span className="text-xs font-meta-data text-success font-medium">No critical issues or attention items detected</span>
-                  </div>
-                )}
+            {activeTab === 'Insights' &&
+              (() => {
+                /* This tab now carries two independently produced things, and
+                   "empty" has to mean neither arrived. The top block is the
+                   LLM's read of the meeting — what needs attention, what is
+                   unresolved, who committed to what. The bottom block is the
+                   citation-checked extraction, where every line shows the
+                   transcript line it came from. One can land without the
+                   other, so either alone is reason to render the tab. */
+                const hasInsights =
+                  meeting.insights?.attentionNeeded?.length > 0 ||
+                  meeting.insights?.pending?.length > 0 ||
+                  meeting.insights?.commitments?.length > 0 ||
+                  meeting.decisions?.length > 0 ||
+                  meeting.actionItems?.length > 0 ||
+                  meeting.keywords?.length > 0
 
-                {/* ⏳ Pending / Unresolved */}
-                {meeting.insights?.pending?.length > 0 ? (
-                  <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center gap-2 mb-2">
-                      <span className="text-lg">⏳</span>
-                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
-                    </div>
-                    <p className="text-xs font-meta-data text-text-faint mb-4">Track things discussed that require follow-up resolution.</p>
-                    <div className="flex flex-col gap-4">
-                      {meeting.insights.pending.map((p, idx) => (
-                        <div key={idx} className="flex flex-col gap-1.5 p-3.5 rounded-lg bg-surface-raised border border-border/60">
-                          <div className="flex items-center justify-between">
-                            <span className="font-semibold text-text-primary text-sm">{typeof p === 'string' ? p.slice(0, 40) : p.topic}</span>
-                            <span className="text-xs font-meta-data px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">
-                              {typeof p === 'string' ? 'Pending' : (p.status || 'Pending')}
-                            </span>
+                if (!hasInsights) {
+                  return (
+                    <EmptyState
+                      icon="lightbulb"
+                      title="No insights generated"
+                      subtitle={
+                        processing
+                          ? 'Decisions, action items and keywords are extracted once transcription finishes.'
+                          : "The summarization pass found nothing here — either no local model was reachable, or nothing it proposed could be verified against the transcript. This panel stays empty rather than showing invented content."
+                      }
+                    />
+                  )
+                }
+
+                return (
+                  <div className="flex flex-col gap-8">
+                    {/* Meetings summarized before the insights pass existed
+                        have no `insights` object at all. Their three cards
+                        would render as "none" boxes, which reads as a finding
+                        about the meeting rather than about the data, so the
+                        block is gated on the pass having run. */}
+                    {meeting.insights && (
+                      <div className="flex flex-col gap-6">
+                    {/* 🚨 Attention Needed */}
+                    {meeting.insights?.attentionNeeded?.length > 0 ? (
+                      <div className="bg-surface border border-error/30 rounded-xl p-5 shadow-sm">
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg">🚨</span>
+                            <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Attention Needed</h3>
                           </div>
-                          <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
-                            {typeof p === 'string' ? p : p.description}
-                          </p>
-                          {typeof p === 'object' && p.owner && (
-                            <span className="text-xs text-text-faint mt-1">Owner: <strong className="text-text-muted">{p.owner}</strong></span>
-                          )}
+                          <span className="text-xs font-meta-data px-2.5 py-1 rounded-full bg-error/10 text-error border border-error/20">
+                            {meeting.insights.attentionNeeded.length} item{meeting.insights.attentionNeeded.length > 1 ? 's' : ''} need attention
+                          </span>
                         </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between shadow-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">⏳</span>
-                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
-                    </div>
-                    <span className="text-xs font-meta-data text-text-faint">No pending or unresolved items recorded</span>
-                  </div>
-                )}
-
-                {/* 📋 Action Items & Commitments */}
-                {meeting.insights?.commitments?.length > 0 ? (
-                  <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-lg">📋</span>
-                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Action Items & Commitments</h3>
-                    </div>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse text-xs font-meta-data">
-                        <thead>
-                          <tr className="border-b border-border text-text-faint uppercase">
-                            <th className="py-2.5 px-3">Owner</th>
-                            <th className="py-2.5 px-3">Action Item</th>
-                            <th className="py-2.5 px-3">Timing / Deadline</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border/60 text-text-muted">
-                          {meeting.insights.commitments.map((c, idx) => (
-                            <tr key={idx} className="hover:bg-surface-raised/50">
-                              <td className="py-3 px-3 font-semibold text-text-primary whitespace-nowrap">{c.owner || 'Team'}</td>
-                              <td className="py-3 px-3 leading-relaxed">{c.action || c.text}</td>
-                              <td className="py-3 px-3 whitespace-nowrap">
-                                <span className={`px-2 py-0.5 rounded text-xs ${c.timing && c.timing !== 'No explicit deadline stated' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-surface-raised text-text-faint'}`}>
-                                  {c.timing || c.timeframe || 'No explicit deadline stated'}
-                                </span>
-                              </td>
-                            </tr>
+                        <div className="flex flex-col gap-2.5">
+                          {meeting.insights.attentionNeeded.map((item, idx) => (
+                            <div key={idx} className="flex items-start gap-2.5 font-meta-data text-meta-data text-text-muted">
+                              <span className="mt-0.5 text-sm">{item.severity === 'red' ? '🔴' : '🟡'}</span>
+                              <span className="leading-relaxed">{item.text}</span>
+                            </div>
                           ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between shadow-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">📋</span>
-                      <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Action Items & Commitments</h3>
-                    </div>
-                    <span className="text-xs font-meta-data text-text-faint">None. Nobody was assigned a specific task, deadline, or responsibility.</span>
-                  </div>
-                )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-surface border border-success/30 rounded-xl p-4 flex items-center justify-between shadow-sm">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">🟢</span>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Attention Needed</h3>
+                        </div>
+                        <span className="text-xs font-meta-data text-success font-medium">No critical issues or attention items detected</span>
+                      </div>
+                    )}
 
+                    {/* ⏳ Pending / Unresolved */}
+                    {meeting.insights?.pending?.length > 0 ? (
+                      <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-lg">⏳</span>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
+                        </div>
+                        <p className="text-xs font-meta-data text-text-faint mb-4">Track things discussed that require follow-up resolution.</p>
+                        <div className="flex flex-col gap-4">
+                          {meeting.insights.pending.map((p, idx) => (
+                            <div key={idx} className="flex flex-col gap-1.5 p-3.5 rounded-lg bg-surface-raised border border-border/60">
+                              <div className="flex items-center justify-between">
+                                <span className="font-semibold text-text-primary text-sm">{typeof p === 'string' ? p.slice(0, 40) : p.topic}</span>
+                                <span className="text-xs font-meta-data px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">
+                                  {typeof p === 'string' ? 'Pending' : (p.status || 'Pending')}
+                                </span>
+                              </div>
+                              <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
+                                {typeof p === 'string' ? p : p.description}
+                              </p>
+                              {typeof p === 'object' && p.owner && (
+                                <span className="text-xs text-text-faint mt-1">Owner: <strong className="text-text-muted">{p.owner}</strong></span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between shadow-sm">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">⏳</span>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
+                        </div>
+                        <span className="text-xs font-meta-data text-text-faint">No pending or unresolved items recorded</span>
+                      </div>
+                    )}
 
-              </div>
-            )}
+                    {/* 📋 Action Items & Commitments */}
+                    {meeting.insights?.commitments?.length > 0 ? (
+                      <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
+                        <div className="flex items-center gap-2 mb-3">
+                          <span className="text-lg">📋</span>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Action Items & Commitments</h3>
+                        </div>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left border-collapse text-xs font-meta-data">
+                            <thead>
+                              <tr className="border-b border-border text-text-faint uppercase">
+                                <th className="py-2.5 px-3">Owner</th>
+                                <th className="py-2.5 px-3">Action Item</th>
+                                <th className="py-2.5 px-3">Timing / Deadline</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border/60 text-text-muted">
+                              {meeting.insights.commitments.map((c, idx) => (
+                                <tr key={idx} className="hover:bg-surface-raised/50">
+                                  <td className="py-3 px-3 font-semibold text-text-primary whitespace-nowrap">{c.owner || 'Team'}</td>
+                                  <td className="py-3 px-3 leading-relaxed">{c.action || c.text}</td>
+                                  <td className="py-3 px-3 whitespace-nowrap">
+                                    <span className={`px-2 py-0.5 rounded text-xs ${c.timing && c.timing !== 'No explicit deadline stated' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-surface-raised text-text-faint'}`}>
+                                      {c.timing || c.timeframe || 'No explicit deadline stated'}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between shadow-sm">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">📋</span>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Action Items & Commitments</h3>
+                        </div>
+                        <span className="text-xs font-meta-data text-text-faint">None. Nobody was assigned a specific task, deadline, or responsibility.</span>
+                      </div>
+                    )}
+                      </div>
+                    )}
+
+                    <InsightSection icon="gavel" iconClass="text-processing" title="Decisions">
+                      {meeting.decisions?.length > 0 ? (
+                        <div className="flex flex-col gap-4">
+                          {meeting.decisions.map((d, i) => {
+                            const decision = normalizeDecision(d)
+                            return (
+                              <div key={i} className="pl-3 border-l-2 border-border">
+                                <p className="text-text-primary font-transcript-body text-transcript-body">
+                                  {decision.text}
+                                </p>
+                                <Evidence
+                                  quote={decision.quote}
+                                  time={decision.sourceTime}
+                                  defaultOpen
+                                />
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <NotGenerated what="Decision extraction" />
+                      )}
+                    </InsightSection>
+
+                    <InsightSection icon="task_alt" iconClass="text-success" title="Action Items">
+                      {meeting.actionItems?.length > 0 ? (
+                        <div className="flex flex-col gap-4">
+                          {meeting.actionItems.map((a, i) => (
+                            <div
+                              key={i}
+                              className="pl-3 border-l-2"
+                              style={{ borderColor: a.color || 'var(--color-border)' }}
+                            >
+                              <p className="text-text-primary font-transcript-body text-transcript-body">
+                                {a.title}
+                              </p>
+                              {(a.assignee || a.due) && (
+                                <p className="font-meta-data text-meta-data text-text-muted mt-1">
+                                  {[a.assignee, a.due].filter(Boolean).join(' · ')}
+                                </p>
+                              )}
+                              <Evidence quote={a.quote} time={a.sourceTime} defaultOpen />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <NotGenerated what="Action item extraction" />
+                      )}
+                    </InsightSection>
+
+                    <InsightSection icon="key" iconClass="text-primary" title="Keywords">
+                      {meeting.keywords?.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {meeting.keywords.map((k) => (
+                            <span
+                              key={k.word}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
+                            >
+                              {k.word}
+                              <span className="text-text-faint">{k.count}</span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <NotGenerated what="Keyword extraction" />
+                      )}
+                    </InsightSection>
+                  </div>
+                )
+              })()}
           </div>
         </div>
 
@@ -843,6 +1021,10 @@ export default function MeetingDetails() {
                 <SummaryProvenance engine={meeting.summaryEngine} />
               </>
             ) : (
+              /* Not NotGenerated: this slot is the summary, and "no
+                 traceable insights" describes the panel below it. A missing
+                 summary means the summarizer produced nothing, which is what
+                 this says. */
               <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
                 There is no executive summary available from this transcript.
               </p>
@@ -926,6 +1108,7 @@ export default function MeetingDetails() {
                         {[a.assignee, a.due].filter(Boolean).join(' · ')}
                       </p>
                     )}
+                    <Evidence quote={a.quote} time={a.sourceTime} />
                   </div>
                 ))}
               </div>
@@ -938,10 +1121,16 @@ export default function MeetingDetails() {
 
           <SidePanel icon="gavel" iconClass="text-processing" title="Key Decisions">
             {meeting.decisions?.length > 0 ? (
-              <ul className="list-disc list-inside font-meta-data text-meta-data text-text-muted flex flex-col gap-2">
-                {meeting.decisions.map((d, i) => (
-                  <li key={i}>{d}</li>
-                ))}
+              <ul className="list-disc list-inside font-meta-data text-meta-data text-text-muted flex flex-col gap-3">
+                {meeting.decisions.map((d, i) => {
+                  const decision = normalizeDecision(d)
+                  return (
+                    <li key={i}>
+                      {decision.text}
+                      <Evidence quote={decision.quote} time={decision.sourceTime} />
+                    </li>
+                  )
+                })}
               </ul>
             ) : (
               <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">

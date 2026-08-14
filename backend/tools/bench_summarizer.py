@@ -91,7 +91,7 @@ def run(model: str, meeting: dict, background: list[str]) -> dict | None:
     print(f"    {summary[:400]}")
     print(f"  decisions       {len(decisions)} kept / {proposed['decisions']} proposed")
     for d in decisions:
-        print(f"    - {d[:88]}")
+        print(f"    - {d['text'][:88]}")
     print(f"  action items    {len(actions)} kept / {proposed['actions']} proposed")
     for a in actions:
         owner = a.get("assignee") or "unassigned"

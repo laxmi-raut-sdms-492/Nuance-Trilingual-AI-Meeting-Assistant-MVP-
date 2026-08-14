@@ -440,6 +440,32 @@ def _verify_assignee(assignee, names: set[str], spoken: str) -> str | None:
     return None
 
 
+def _find_source_line(quote: str, transcript: list[dict]) -> dict | None:
+    """
+    The transcript line a verified quote actually matches, for provenance.
+
+    `verify_quote` (above) only needs a yes/no over plain strings — that is
+    also the interface the citation benchmark measures. This does the same
+    normalize-then-fuzzy comparison but over the full line objects, so the UI
+    can show the line's real timestamp and speaker next to the insight it
+    supports rather than just the insight text.
+    """
+    needle = _normalize(quote)
+    if not needle:
+        return None
+    best, best_ratio = None, 0.0
+    for entry in transcript:
+        haystack = _normalize(entry.get("text") or "")
+        if not haystack:
+            continue
+        if needle in haystack or haystack in needle:
+            return entry
+        ratio = difflib.SequenceMatcher(None, needle, haystack).ratio()
+        if ratio > best_ratio:
+            best, best_ratio = entry, ratio
+    return best if best_ratio >= SUMMARY_CITATION_THRESHOLD else None
+
+
 def _speaker_colors(transcript: list[dict]) -> dict[str, str]:
     """
     name -> colour, from the transcript the backend already coloured.
@@ -457,13 +483,19 @@ def _speaker_colors(transcript: list[dict]) -> dict[str, str]:
     return colors
 
 
-def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[list[str], list[dict]]:
-    """Verify, de-duplicate and colour the model's proposed items."""
+def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    Verify, de-duplicate and colour the model's proposed items.
+
+    Each surviving decision/action item keeps the transcript line it was
+    verified against (`quote`, `sourceTime`) so the UI can show the item next
+    to its evidence instead of asking the reader to trust a bare claim.
+    """
     texts = [line.get("text") or "" for line in transcript]
     names, spoken = _known_names(transcript)
     colors = _speaker_colors(transcript)
 
-    decisions: list[str] = []
+    decisions: list[dict] = []
     seen_decisions: set[str] = set()
     actions: list[dict] = []
     seen_actions: set[str] = set()
@@ -483,7 +515,16 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
             if key in seen_decisions:
                 continue
             seen_decisions.add(key)
-            decisions.append(text)
+            source = _find_source_line(decision.get("quote") or "", transcript)
+            decisions.append(
+                {
+                    "text": text,
+                    # The real transcript line, not the model's copy of it —
+                    # exact even if the model repaired a typo when quoting.
+                    "quote": (source or {}).get("text") or (decision.get("quote") or "").strip(),
+                    "sourceTime": (source or {}).get("time"),
+                }
+            )
 
         for action in window.get("action_items") or []:
             if not isinstance(action, dict):
@@ -500,6 +541,7 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
             seen_actions.add(key)
             assignee = _verify_assignee(action.get("assignee"), names, spoken)
             due = action.get("due")
+            source = _find_source_line(action.get("quote") or "", transcript)
             actions.append(
                 {
                     "title": title,
@@ -508,6 +550,8 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
                     # shown as said; anything else stays empty.
                     "due": due.strip() if isinstance(due, str) and due.strip().lower() not in ("", "null", "none") else None,
                     "color": colors.get(_normalize(assignee or "")) if assignee else None,
+                    "quote": (source or {}).get("text") or (action.get("quote") or "").strip(),
+                    "sourceTime": (source or {}).get("time"),
                 }
             )
 
@@ -596,7 +640,7 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
         words = summary.split()[:35]
         summary = " ".join(words).rstrip(",;:") + "."
 
-    decisions: list[str] = []
+    decisions: list[dict] = []
     actions: list[dict] = []
     colors = _speaker_colors(transcript)
     for line in transcript:
@@ -607,7 +651,9 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
             continue
         lowered = text.lower()
         if any(cue in lowered for cue in DECISION_CUES) and len(decisions) < 8:
-            decisions.append(text)
+            # quote == text: this engine only ever shows a line as itself, so
+            # the claim and its evidence are the same string by construction.
+            decisions.append({"text": text, "quote": text, "sourceTime": line.get("time")})
         elif any(cue in lowered for cue in ACTION_CUES) and len(actions) < 8:
             speaker = _display_name(line)
             short_title = _shorten_action_title(text, max_words=10)
@@ -619,6 +665,8 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
                     "assignee": speaker,
                     "due": None,
                     "color": colors.get(_normalize(speaker or "")) if speaker else None,
+                    "quote": text,
+                    "sourceTime": line.get("time"),
                 }
             )
 
@@ -637,7 +685,7 @@ def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
     }
 
 
-def _extract_insights(transcript: list[dict], actions: list[dict], decisions: list[str]) -> dict:
+def _extract_insights(transcript: list[dict], actions: list[dict], decisions: list[dict]) -> dict:
     """
     Intelligent NLP Post-Meeting Insights:
     - attentionNeeded: Items requiring attention (unowned tasks, follow-up required).

@@ -281,7 +281,6 @@ export default function MeetingDetails() {
   const [search, setSearch] = useState('')
   const [enrolledSpeakers, setEnrolledSpeakers] = useState([])
   const [audioVersion, setAudioVersion] = useState(0)
-  const [showRawAsr, setShowRawAsr] = useState(false)
   const autoLabeledRef = useRef(false)
 
   const load = useCallback(async () => {
@@ -587,17 +586,6 @@ export default function MeetingDetails() {
                         className="input-base w-full pl-9 pr-3 py-2 rounded-lg border font-meta-data text-meta-data placeholder:text-text-faint"
                       />
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowRawAsr((v) => !v)}
-                      className={`px-3 py-2 rounded-lg border font-meta-data text-meta-data transition-colors ${
-                        showRawAsr
-                          ? 'border-primary-container text-primary bg-primary/5'
-                          : 'border-border text-text-muted hover:text-text-primary'
-                      }`}
-                    >
-                      {showRawAsr ? 'Hide raw ASR' : 'Show raw ASR'}
-                    </button>
                   </div>
                 )}
 
@@ -699,13 +687,8 @@ export default function MeetingDetails() {
                                   : 'font-transcript-body text-transcript-body'
                               }`}
                             >
-                              {showRawAsr && t.raw_text ? t.raw_text : (t.cleaned_text || t.text)}
+                              {t.cleaned_text || t.text}
                             </p>
-                            {showRawAsr && t.raw_text && t.cleaned_text && t.raw_text !== t.cleaned_text && (
-                              <p className="mt-2 font-meta-data text-meta-data text-text-faint border-l-2 border-border pl-3">
-                                Cleaned: {t.cleaned_text}
-                              </p>
-                            )}
                           </div>
                         </div>
                       )

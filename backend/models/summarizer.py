@@ -651,12 +651,23 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
     deadlines = []
 
     seen_topics = set()
+    seen_attention = set()
+
+    PLEASANTRIES = (
+        "thank you", "thanks", "good evening", "good morning", "hello", "my name is",
+        "introduce", "valuable", "welcome", "nice to meet", "glad to", "how are you", "sir"
+    )
 
     for line in transcript:
         text = (line.get("text") or "").strip()
-        if not text or len(text.split()) < 3:
+        if not text or len(text.split()) < 4:
             continue
         lowered = text.lower()
+
+        # Skip pleasantries, introductions, and polite conversation
+        if any(p in lowered for p in PLEASANTRIES):
+            continue
+
         speaker = _display_name(line) or "Team"
 
         # 1. COMMITMENTS & DEADLINES (Strict temporal extraction - NO audio timestamp hallucinations)
@@ -675,43 +686,52 @@ def _extract_insights(transcript: list[dict], actions: list[dict], decisions: li
 
         if any(w in lowered for w in ("will", "going to", "i'll", "need to", "must", "plan to", "ready to", "present", "take", "bring", "करायचं", "करू", "करना है")):
             action_title = _shorten_action_title(text, max_words=10)
-            commitments.append({
-                "owner": speaker if speaker and "speaker" not in speaker.lower() else "Team",
-                "action": action_title,
-                "timing": timing or "No explicit deadline stated"
-            })
-            if timing and timing != "No explicit deadline stated":
-                deadlines.append({
-                    "deadline": timing,
-                    "detail": action_title
+            if action_title and len(action_title.split()) >= 3:
+                commitments.append({
+                    "owner": speaker if speaker and not str(speaker).lower().startswith("speaker_") else "Team",
+                    "action": action_title,
+                    "timing": timing or "No explicit deadline stated"
                 })
+                if timing and timing != "No explicit deadline stated":
+                    deadlines.append({
+                        "deadline": timing,
+                        "detail": action_title
+                    })
 
         # 2. PENDING / UNRESOLVED (Structured topics)
-        if any(w in lowered for w in ("still", "details", "iron out", "work out", "debate", "question", "yet", "unclear", "caution", "wait", "pending", "नाही", "काही")):
+        if any(w in lowered for w in ("still", "iron out", "work out", "debate", "unclear", "caution", "wait", "pending", "नाही", "काही")):
             topic_key = lowered[:30]
             if topic_key not in seen_topics:
                 seen_topics.add(topic_key)
-                words = text.split()
-                title_text = " ".join(words[:5])
+                short_desc = _shorten_action_title(text, max_words=12)
+                title_text = " ".join(short_desc.split()[:4])
                 pending_items.append({
                     "topic": title_text,
-                    "description": text,
-                    "owner": speaker if speaker and "speaker" not in speaker.lower() else "Team",
+                    "description": short_desc,
+                    "owner": speaker if speaker and not str(speaker).lower().startswith("speaker_") else "Team",
                     "status": "In progress" if "work" in lowered or "still" in lowered else "Pending"
                 })
 
-        # 3. ATTENTION NEEDED
-        if not speaker or "speaker" in str(speaker).lower() or "unassigned" in lowered or "no owner" in lowered:
-            if any(w in lowered for w in ("need", "must", "should", "critical", "important", "issue", "training", "interview")):
+        # 3. ATTENTION NEEDED (Only genuine unowned action items or critical follow-ups)
+        is_unowned_task = any(w in lowered for w in ("need to", "must", "action item", "critical", "urgent", "task"))
+        has_named_speaker = speaker and not str(speaker).lower().startswith("speaker_") and speaker.lower() != "unknown"
+
+        if is_unowned_task and not has_named_speaker:
+            short_item = _shorten_action_title(text, max_words=10)
+            if short_item and short_item not in seen_attention and len(short_item.split()) >= 3:
+                seen_attention.add(short_item)
                 attention_needed.append({
                     "severity": "red",
-                    "text": f"{text[:90]} — has no confirmed owner"
+                    "text": f"{short_item} — unassigned task"
                 })
-        elif any(w in lowered for w in ("follow up", "follow-up", "recap", "check", "confirm", "caution", "hope", "absent", "absence")):
-            attention_needed.append({
-                "severity": "yellow",
-                "text": f"{text[:90]} — follow-up required"
-            })
+        elif any(w in lowered for w in ("follow up", "follow-up", "requires check", "needs review")):
+            short_item = _shorten_action_title(text, max_words=10)
+            if short_item and short_item not in seen_attention and len(short_item.split()) >= 3:
+                seen_attention.add(short_item)
+                attention_needed.append({
+                    "severity": "yellow",
+                    "text": f"{short_item} — follow-up required"
+                })
 
     return {
         "attentionNeeded": attention_needed[:3],

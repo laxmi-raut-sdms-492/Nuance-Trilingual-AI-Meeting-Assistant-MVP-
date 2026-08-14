@@ -158,13 +158,27 @@ def _to_dict(meeting: Meeting) -> dict:
             }
             for t in meeting.transcript_lines
         ],
-        "decisions": [_shorten_action_title(d.text, max_words=14) for d in meeting.decisions],
+        # The two halves of this are not in tension: the title is what the card
+        # shows and is shortened for it, while quote/sourceTime are the verbatim
+        # transcript line the item was drawn from. Shortening the title is only
+        # safe *because* the untouched quote is carried alongside it — a reader
+        # who doubts a terse action item can still see what was actually said.
+        "decisions": [
+            {
+                "text": _shorten_action_title(d.text, max_words=14),
+                "quote": d.quote,
+                "sourceTime": d.source_time,
+            }
+            for d in meeting.decisions
+        ],
         "actionItems": [
             {
                 "title": _shorten_action_title(a.title, max_words=10),
                 "assignee": a.assignee,
                 "due": a.due,
                 "color": a.color,
+                "quote": a.quote,
+                "sourceTime": a.source_time,
             }
             for a in meeting.action_items
         ],
@@ -258,8 +272,16 @@ def _apply_children(session, meeting: Meeting, record: dict):
         ]
 
     if "decisions" in record:
+        # Accepts either the current {"text", "quote", "sourceTime"} shape or a
+        # bare string, so a caller that only ever produced plain text (an old
+        # tool script, a hand-written fixture) still writes cleanly.
         pending["decisions"] = [
-            Decision(position=i, text=d if isinstance(d, str) else str(d))
+            Decision(
+                position=i,
+                text=d.get("text", "") if isinstance(d, dict) else str(d),
+                quote=d.get("quote") if isinstance(d, dict) else None,
+                source_time=d.get("sourceTime") if isinstance(d, dict) else None,
+            )
             for i, d in enumerate(record["decisions"] or [])
         ]
 
@@ -271,6 +293,8 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 assignee=a.get("assignee"),
                 due=a.get("due"),
                 color=a.get("color"),
+                quote=a.get("quote"),
+                source_time=a.get("sourceTime"),
             )
             for i, a in enumerate(record["actionItems"] or [])
         ]

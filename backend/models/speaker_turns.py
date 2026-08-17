@@ -330,7 +330,7 @@ def _clean_and_merge_sandwiched_segments(segments: list[dict]) -> list[dict]:
                 continue
 
         if prev_spk and next_spk and prev_spk == next_spk and curr_spk != prev_spk:
-            if dur <= 2.5 or is_noise:
+            if is_noise:
                 cleaned[i]["speaker_label"] = prev_spk
                 cleaned[i]["speaker"] = prev_spk
 

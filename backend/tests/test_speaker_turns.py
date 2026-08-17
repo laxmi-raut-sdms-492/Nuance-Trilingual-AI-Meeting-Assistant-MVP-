@@ -165,3 +165,35 @@ def test_should_not_merge_different_speakers():
     cur = _seg(0, 2, "Speaker_00", "a")
     nxt = _seg(2.2, 4, "Speaker_01", "b")
     assert should_merge_turn(cur, nxt) is False
+
+
+def test_short_real_speech_sandwiched_is_not_reassigned():
+    """
+    Real short speech (< 2.5s) sandwiched between two segments from another speaker
+    must NOT be force-reassigned to the surrounding speaker.
+    """
+    segments = [
+        {**_seg(0, 5, "Speaker_00", "Let us start the meeting today."), "speaker": "Karina"},
+        {**_seg(5.5, 7, "Speaker_01", "ready yet"), "speaker": "Anchor"},
+        {**_seg(7.5, 12, "Speaker_00", "We need to make sure all deliverables are on track."), "speaker": "Karina"},
+    ]
+    turns = build_speaker_turns(segments)
+    assert len(turns) == 3
+    assert turns[0]["speaker"] == "Karina"
+    assert turns[1]["speaker"] == "Anchor"
+    assert turns[1]["speaker_label"] == "Speaker_01"
+    assert "ready yet" in turns[1]["raw_text"]
+    assert turns[2]["speaker"] == "Karina"
+
+
+def test_sandwiched_noise_is_reassigned():
+    """Non-speech noise ([cough]) sandwiched between same speaker SHOULD be merged."""
+    segments = [
+        _seg(0, 5, "Speaker_00", "Let us start the meeting today."),
+        _seg(5.5, 6.5, "Speaker_01", "[cough]"),
+        _seg(7.0, 12, "Speaker_00", "We need to make sure all deliverables are on track."),
+    ]
+    turns = build_speaker_turns(segments)
+    assert len(turns) == 1
+    assert turns[0]["speaker_label"] == "Speaker_00"
+

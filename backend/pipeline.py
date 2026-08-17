@@ -539,9 +539,45 @@ class MeetingSession:
 
         embedding = get_embedding(audio)
         speaker_label = self.diarizer.add_segment(start, end, embedding)
+        overlap_info = getattr(self.diarizer, "last_segment_info", {}) or {}
+        is_overlap = bool(overlap_info.get("is_overlap", False))
+        candidate_labels = overlap_info.get("candidate_labels", [speaker_label])
 
-        stable_embedding = self.diarizer.get_centroid(speaker_label)
-        identified_as, confidence = self.identifier.identify(stable_embedding)
+        candidate_speakers = []
+        valid_candidate_labels = []
+        if is_overlap:
+            for lab in candidate_labels:
+                if lab in self.diarizer.clusters:
+                    # Ignore single-sample / noise fragment clusters when multiple clusters exist
+                    cluster_embs = self.diarizer.cluster_embeddings.get(lab, [])
+                    if len(cluster_embs) < 2 and len(self.diarizer.clusters) > 1:
+                        continue
+                    st_emb = self.diarizer.get_centroid(lab)
+                    disp, _ = self.identifier.identify(st_emb)
+                    name = disp if disp != UNKNOWN else lab
+                else:
+                    name = lab
+
+                if name not in candidate_speakers:
+                    candidate_speakers.append(name)
+                if lab not in valid_candidate_labels:
+                    valid_candidate_labels.append(lab)
+
+            if not valid_candidate_labels:
+                valid_candidate_labels = [speaker_label]
+                candidate_speakers = [speaker_label]
+
+            candidate_labels = valid_candidate_labels
+
+            display_name = " + ".join(candidate_speakers) if len(candidate_speakers) > 1 else candidate_speakers[0]
+            identified_as = display_name
+            speaker_label = " + ".join(candidate_labels) if len(candidate_labels) > 1 else candidate_labels[0]
+            stable_embedding = embedding
+            confidence = 0.5
+        else:
+            stable_embedding = self.diarizer.get_centroid(speaker_label)
+            identified_as, confidence = self.identifier.identify(stable_embedding)
+            candidate_speakers = [identified_as if identified_as != UNKNOWN else speaker_label]
 
         try:
             pieces = split_on_language_change(audio)
@@ -570,6 +606,9 @@ class MeetingSession:
                 confidence=confidence,
                 was_split=was_split,
                 lcd_language=detected_by_lcd if was_split else None,
+                is_overlap=is_overlap,
+                candidate_speakers=candidate_speakers,
+                candidate_labels=candidate_labels,
             )
             if entry:
                 entries.append(entry)
@@ -589,33 +628,17 @@ class MeetingSession:
         confidence: float,
         was_split: bool = False,
         lcd_language: str | None = None,
+        is_overlap: bool = False,
+        candidate_speakers: list[str] | None = None,
+        candidate_labels: list[str] | None = None,
     ) -> dict | None:
         """
         Transcribe one language-homogeneous piece and append its entry.
-
-        The language is decided here, not by lcd.py: that module locates the
-        boundary with a cheap model, and Whisper — the better detector, now
-        looking at audio that really is one language — decides what it is.
-
-        A piece that came from a split is transcribed WITHOUT surrounding
-        context, unlike every other segment. transcribe_with_context detects
-        the language over a window padded by seconds on each side, which is the
-        better guess normally and exactly wrong here: the audio on either side
-        of a language boundary is the other language, and it is usually the
-        longer side, so the padded window would hand the minority piece
-        straight back to the majority engine — undoing the split that just
-        found it.
         """
         if len(audio) < MIN_SPEECH_SAMPLES:
             return None
 
-        # Same reason: the meeting-dominant hint rescues weak detection on an
-        # ordinary segment, but on a piece we split *because* the language
-        # changed it pulls toward the language we just proved this piece is
-        # not. lcd's own label is weak evidence, but it is the only evidence
-        # drawn from this exact audio — and where it is least reliable
-        # (Hindi vs Marathi) both answers route to the same engine anyway.
-        hint = lcd_language or self.dominant_language  # lcd_language is None unless split
+        hint = lcd_language or self.dominant_language
 
         if self._full_audio is not None and not was_split:
             asr = self.stt_adapter.transcribe_with_context(
@@ -628,9 +651,6 @@ class MeetingSession:
 
         self._language_counts[asr["language"]] = self._language_counts.get(asr["language"], 0) + 1
 
-        # Voice match first. If nobody is enrolled yet, fall back to an
-        # explicit self-introduction in the words ("My name is Anushka") and
-        # enroll that voice automatically so later meetings label themselves.
         if identified_as == UNKNOWN:
             hint = extract_self_introduction_name(asr["text"])
             if hint:
@@ -655,6 +675,9 @@ class MeetingSession:
             "identified_as": identified_as,
             "confidence": confidence,
             "color": self._color_for(speaker_label),
+            "is_overlap": is_overlap,
+            "candidate_speakers": candidate_speakers or [display_name],
+            "candidate_labels": candidate_labels or [speaker_label],
             "language": asr["language"],
             "language_name": asr["language_name"],
             "language_prob": asr["language_prob"],
@@ -663,12 +686,6 @@ class MeetingSession:
             "adapter": asr.get("adapter", self.stt_adapter.adapter_type),
             "provider": asr.get("provider", self.stt_adapter.provider_name),
             "model": asr.get("model", self.stt_adapter.model_name),
-            # Two languages scored almost equally on this piece. Before the LCD
-            # split this mostly meant both were spoken in one segment and half
-            # the text was mangled. Now it should be rare — a piece that still
-            # trips it is one the boundary search could not cleanly separate,
-            # which is exactly when a reader most needs telling.
-
             "language_margin": asr.get("language_margin", 1.0),
             "language_mixed_suspected": asr.get("language_mixed_suspected", False),
             "raw_text": raw_text,

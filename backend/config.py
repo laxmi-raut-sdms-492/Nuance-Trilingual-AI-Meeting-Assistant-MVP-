@@ -22,7 +22,7 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
 SCD_WINDOW_SECONDS = 1.5
-SCD_HOP_SECONDS = 0.5
+SCD_HOP_SECONDS = float(os.getenv("SCD_HOP_SECONDS", "0.25"))
 SCD_CHANGE_THRESHOLD = 0.28
 SCD_MIN_SEGMENT_SECONDS = 2.0
 SCD_MIN_SUBSEGMENT_SECONDS = 1.0
@@ -280,6 +280,12 @@ SINGLE_CLUSTER_SPLIT_MULTIPLIER = float(
 )
 # Offline: collapse to 1 speaker when p90 pairwise embedding distance is below this.
 SINGLE_SPEAKER_P90_DISTANCE = float(os.getenv("SINGLE_SPEAKER_P90_DISTANCE", "0.38"))
+
+# --- Overlap Source Separation ---
+# Opt-in additive feature flag — disabled by default to safeguard standard pipeline
+OVERLAP_SEPARATION_ENABLED = os.getenv("OVERLAP_SEPARATION_ENABLED", "0").lower() in ("1", "true", "yes")
+OVERLAP_MIN_CONFIDENCE = float(os.getenv("OVERLAP_MIN_CONFIDENCE", "0.45"))
+SOURCE_SEPARATION_MODEL = os.getenv("SOURCE_SEPARATION_MODEL", "speechbrain/sepformer-wsj02mix")
 
 # --- Speaker turns (transcript readability) ---
 TURN_MERGE_MAX_GAP_SEC = float(os.getenv("TURN_MERGE_MAX_GAP_SEC", "2.5"))

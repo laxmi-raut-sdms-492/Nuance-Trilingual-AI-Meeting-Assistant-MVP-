@@ -149,6 +149,9 @@ def _to_dict(meeting: Meeting) -> dict:
                 "language_mix": _split_language_mix(t.language_mix),
                 "language_mixed_suspected": t.language_mixed_suspected,
                 "language_margin": t.language_margin,
+                "is_overlap": bool(t.is_overlap),
+                "candidate_speakers": _split_language_mix(t.candidate_speakers),
+                "candidate_labels": _split_language_mix(t.candidate_labels),
                 "raw_text": t.raw_text,
                 "cleaned_text": t.cleaned_text,
                 "text": t.cleaned_text or t.text,
@@ -252,6 +255,9 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 language_margin=(
                     1.0 if t.get("language_margin") is None else float(t["language_margin"])
                 ),
+                is_overlap=bool(t.get("is_overlap", False)),
+                candidate_speakers=_join_language_mix(t.get("candidate_speakers")),
+                candidate_labels=_join_language_mix(t.get("candidate_labels")),
                 raw_text=t.get("raw_text") or t.get("text", ""),
                 cleaned_text=t.get("cleaned_text") or t.get("text", ""),
                 text=t.get("cleaned_text") or t.get("text", ""),

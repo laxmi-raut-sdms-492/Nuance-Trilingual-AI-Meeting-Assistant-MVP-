@@ -8,6 +8,10 @@ silhouette — no ground-truth speaker count required.
 
 Guard: if the best silhouette is weak, keep the streaming labels (especially
 important for true 1-speaker recordings — silhouette cannot score k=1).
+
+TODO(production-upgrade): pyannote/speaker-diarization-3.1 was evaluated and is the
+recommended upgrade path once a GPU server deployment is available. It natively handles
+unknown speaker counts via neural powerset segmentation and multi-speaker overlap detection.
 """
 
 from __future__ import annotations
@@ -60,7 +64,10 @@ def likely_single_speaker(embeddings: np.ndarray) -> bool:
     if not dists:
         return True
     p90 = float(np.percentile(dists, 90))
-    logger.info(f"single-speaker check: p90 pairwise dist={p90:.3f}")
+    max_d = float(np.max(dists))
+    logger.info(f"single-speaker check: p90 pairwise dist={p90:.3f}, max dist={max_d:.3f}")
+    if max_d >= 0.42:
+        return False
     return p90 < SINGLE_SPEAKER_P90_DISTANCE
 
 
@@ -146,6 +153,42 @@ def pick_speaker_count(
         f"(peak={peak_score:.3f}, candidates={len(scores)})"
     )
     return best_k, best_score, best_assignment
+
+
+def pick_speaker_count_by_distance_threshold(
+    embeddings: np.ndarray,
+    *,
+    distance_threshold: float = 0.48,
+) -> tuple[int, float, np.ndarray]:
+    """
+    Cluster embeddings using AgglomerativeClustering with distance_threshold
+    (n_clusters=None). Automatically determines speaker count k based strictly
+    on cosine embedding distance.
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.metrics import silhouette_score
+
+    n = len(embeddings)
+    if n < 2:
+        return 1, 1.0, np.zeros(n, dtype=np.int32)
+
+    clustering = AgglomerativeClustering(
+        n_clusters=None,
+        distance_threshold=distance_threshold,
+        metric="cosine",
+        linkage="average",
+    ).fit(embeddings)
+
+    assignment = clustering.labels_
+    k = len(set(int(a) for a in assignment))
+    score = 0.0
+    if k > 1 and n > k:
+        try:
+            score = float(silhouette_score(embeddings, assignment, metric="cosine"))
+        except Exception:
+            score = 0.0
+
+    return k, score, assignment
 
 
 def _assignment_from_transcript(transcript: list[dict]) -> np.ndarray:

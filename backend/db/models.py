@@ -224,6 +224,9 @@ class TranscriptLine(Base):
     # so the threshold can be re-tuned against transcripts already on disk
     # instead of requiring a reprocess. 1.0 = detector was certain.
     language_margin: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    is_overlap: Mapped[bool] = mapped_column(nullable=False, default=False)
+    candidate_speakers: Mapped[str | None] = mapped_column(String(255))
+    candidate_labels: Mapped[str | None] = mapped_column(String(255))
 
     # Raw ASR verbatim output; cleaned_text is the readable turn after merge/cleanup.
     raw_text: Mapped[str | None] = mapped_column(Text)

@@ -47,57 +47,121 @@ class SessionDiarizer:
         self._segments_since_merge_check = 0
         # Pending evidence for a potential new speaker before minting a label.
         self._candidates: list[dict] = []
+        # Pending short segments (< MIN_NEW_CLUSTER_SECONDS) buffered to prevent false force-matching
+        self._pending_short_segments: list[dict] = []
         # All segment distances seen — used for adaptive thresholds.
         self._meeting_distances: list[float] = []
+        self.last_segment_info: dict = {}
 
     def add_segment(self, start: float, end: float, embedding: np.ndarray) -> str:
         duration = end - start
         if not self.clusters:
             label = self._new_cluster(embedding)
             logger.info(f"[{start:.1f}-{end:.1f}s] no existing clusters -> new {label}")
+            self.last_segment_info = {
+                "is_overlap": False,
+                "candidate_labels": [label],
+                "speaker_label": label,
+            }
             return label
 
         best_label, best_dist, raw_dists = self._find_best_match(embedding)
         self._meeting_distances.append(best_dist)
 
-        threshold = self._effective_threshold(best_label)
-        force_same = (
-            duration < MIN_NEW_CLUSTER_SECONDS
-            and best_dist < SHORT_FORCE_MATCH_MAX_DISTANCE
-        )
+        # --- Contextual Overlap Candidate Selection Heuristic ---
+        # Include all clusters if <= 2 total clusters exist; filter 1-sample noise clusters when >= 3 clusters exist
+        if len(self.clusters) >= 3:
+            active_clusters = {
+                lbl: d for lbl, d in raw_dists.items()
+                if self.clusters[lbl]["count"] >= 2 or lbl == self._last_assigned_label
+            }
+            if len(active_clusters) < 2:
+                active_clusters = raw_dists
+        else:
+            active_clusters = raw_dists
 
-        if best_dist < threshold or force_same:
+        if len(active_clusters) >= 2:
+            sorted_dists = sorted(active_clusters.items(), key=lambda kv: kv[1])
+            c1_label, d1 = sorted_dists[0]
+            c2_label, d2 = sorted_dists[1]
+
+            c1_vec = self.clusters[c1_label]["centroid"]
+            c2_vec = self.clusters[c2_label]["centroid"]
+            cmix = c1_vec + c2_vec
+            cmix = (cmix / (np.linalg.norm(cmix) + 1e-9)).astype(np.float32)
+            dmix = float(cosine(embedding, cmix))
+
+            th1 = self._effective_threshold(c1_label)
+            th2 = self._effective_threshold(c2_label)
+
+            if d1 <= th1 + 0.05 and d2 <= th2 + 0.05:
+                if (d2 - d1 <= 0.06) and (dmix <= min(d1, d2) + 0.03):
+                    combo_label = f"{c1_label} & {c2_label}"
+                    self.last_segment_info = {
+                        "is_overlap": True,
+                        "candidate_labels": [c1_label, c2_label],
+                        "speaker_label": combo_label,
+                    }
+                    logger.info(
+                        f"[{start:.1f}-{end:.1f}s] contextual overlap detected: {combo_label} "
+                        f"(d1={d1:.3f}, d2={d2:.3f}, dmix={dmix:.3f})"
+                    )
+                    self._last_assigned_label = c1_label
+                    return combo_label
+
+        threshold = self._effective_threshold(best_label)
+
+        if best_dist < threshold:
             self._update_cluster(best_label, embedding)
-            reason = (
-                "short but close — keep same speaker"
-                if force_same and best_dist >= threshold
-                else "matched"
-            )
             logger.info(
-                f"[{start:.1f}-{end:.1f}s] {reason} {best_label} "
+                f"[{start:.1f}-{end:.1f}s] matched {best_label} "
                 f"(dist={best_dist:.3f}, threshold={threshold:.3f}, "
                 f"count={self.clusters[best_label]['count']})"
             )
             self._last_assigned_label = best_label
             self._maybe_merge_clusters()
+            self.last_segment_info = {
+                "is_overlap": False,
+                "candidate_labels": [best_label],
+                "speaker_label": best_label,
+            }
             return best_label
 
         # No confident match — defer or create new cluster based on evidence.
         if self._should_defer_new_cluster(best_label, best_dist, threshold, duration):
             self._record_candidate(embedding, best_label, best_dist, start, end)
-            # Do NOT update centroid with outlier — that would drift the cluster
-            # toward a different voice and prevent ever splitting.
+            self._pending_short_segments.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "embedding": embedding.copy(),
+                    "closest": best_label,
+                    "dist": best_dist,
+                }
+            )
             logger.info(
                 f"[{start:.1f}-{end:.1f}s] deferred new cluster — tentatively {best_label} "
                 f"(dist={best_dist:.3f}, threshold={threshold:.3f}, "
                 f"candidates={len(self._candidates)})"
             )
             self._last_assigned_label = best_label
+            self.last_segment_info = {
+                "is_overlap": False,
+                "candidate_labels": [best_label],
+                "speaker_label": best_label,
+                "tentative": True,
+            }
             return best_label
 
         if self._promote_candidate_if_ready(embedding, start, end):
             label = self._last_assigned_label
+            self._resolve_pending_short_segments(label)
             self._maybe_merge_clusters()
+            self.last_segment_info = {
+                "is_overlap": False,
+                "candidate_labels": [label],
+                "speaker_label": label,
+            }
             return label
 
         new_label = self._new_cluster(embedding)
@@ -108,12 +172,43 @@ class SessionDiarizer:
         )
         self._last_assigned_label = new_label
         self._candidates.clear()
+        self._resolve_pending_short_segments(new_label)
         self._segments_since_merge_check = CLUSTER_MERGE_CHECK_EVERY
         self._maybe_merge_clusters()
+        self.last_segment_info = {
+            "is_overlap": False,
+            "candidate_labels": [new_label],
+            "speaker_label": new_label,
+        }
         return new_label
+
+    def _resolve_pending_short_segments(self, new_label: str) -> None:
+        if not self._pending_short_segments:
+            return
+        centroid = self.clusters[new_label]["centroid"]
+        th = self._effective_threshold(new_label)
+        remaining = []
+        for pending in self._pending_short_segments:
+            dist = float(cosine(pending["embedding"], centroid))
+            if dist < th:
+                logger.info(
+                    f"[{pending['start']:.1f}-{pending['end']:.1f}s] retroactively resolved "
+                    f"pending short segment -> {new_label} (dist={dist:.3f})"
+                )
+            else:
+                remaining.append(pending)
+        self._pending_short_segments = remaining
 
     def get_centroid(self, label: str) -> np.ndarray:
         return self.clusters[label]["centroid"]
+
+    def get_embeddings(self, label: str) -> list:
+        return self.clusters.get(label, {}).get("embeddings", [])
+
+    @property
+    def cluster_embeddings(self) -> dict[str, list]:
+        """Backward-compatibility property mapping cluster labels to sample embeddings."""
+        return {label: data.get("embeddings", []) for label, data in self.clusters.items()}
 
     def get_confidence(self, label: str) -> float:
         count = self.clusters[label]["count"]
@@ -156,8 +251,6 @@ class SessionDiarizer:
         dists = {}
         for label in self.clusters:
             dist = self._distance_to_cluster(embedding, label)
-            if label == self._last_assigned_label:
-                dist = max(0.0, dist - HYSTERESIS_BONUS)
             dists[label] = dist
         best_label = min(dists, key=dists.get)
         return best_label, dists[best_label], dists

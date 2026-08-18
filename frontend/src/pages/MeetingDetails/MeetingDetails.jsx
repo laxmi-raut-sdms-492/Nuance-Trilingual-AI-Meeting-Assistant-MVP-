@@ -709,7 +709,11 @@ export default function MeetingDetails() {
                               />
                               <SpeakerLabel
                                 meetingId={id}
-                                speaker={t.speaker}
+                                speaker={
+                                  t.is_overlap && t.candidate_speakers && t.candidate_speakers.length > 1
+                                    ? t.candidate_speakers.join(' + ')
+                                    : t.speaker
+                                }
                                 speakerLabel={t.speaker_label}
                                 color={t.color}
                                 onRenamed={load}
@@ -761,17 +765,54 @@ export default function MeetingDetails() {
                                   Mixed?
                                 </span>
                               )}
+                              {t.is_overlap && (
+                                <span
+                                  title={
+                                    'Overlapping Speech: Multiple speakers detected simultaneously ' +
+                                    `(${ (t.candidate_speakers || [t.speaker]).join(' + ') }). Note: Speech was flagged as overlapping, not cleanly separated into per-speaker transcript lines.`
+                                  }
+                                  className="px-1.5 py-0.5 border border-amber-500/40 bg-amber-500/10 rounded text-[10px] uppercase font-bold tracking-wider text-amber-500 ml-1 inline-flex items-center gap-1"
+                                >
+                                  <span className="material-symbols-outlined text-[12px]">groups</span>
+                                  Overlapping Speech
+                                </span>
+                              )}
                             </div>
-                            <p
-                              lang={t.language}
-                              className={`text-text-primary ${
-                                devanagari
-                                  ? 'font-transcript-body-hi text-transcript-body-hi'
-                                  : 'font-transcript-body text-transcript-body'
-                              }`}
-                            >
-                              {showRawAsr && t.raw_text ? t.raw_text : (t.cleaned_text || t.text)}
-                            </p>
+                            {t.attributed_spans && t.attributed_spans.length > 0 ? (
+                                <div className="flex flex-col gap-1.5 mt-1 border-l-2 border-amber-500/40 pl-3 py-1 bg-surface-raised/30 rounded-r">
+                                  {t.attributed_spans.map((span, sIdx) => (
+                                    <div key={sIdx} className="flex items-start gap-2">
+                                      <span
+                                        className="w-2.5 h-2.5 rounded-full shrink-0 mt-1.5"
+                                        style={{ backgroundColor: span.color || t.color || 'var(--color-primary)' }}
+                                      />
+                                      <span
+                                        className="font-semibold text-xs shrink-0"
+                                        style={{ color: span.color || t.color || 'var(--color-primary)' }}
+                                      >
+                                        {span.speaker}:
+                                      </span>
+                                      <span
+                                        className={devanagari ? 'font-transcript-body-hi' : 'font-transcript-body'}
+                                        style={{ color: span.color || t.color || 'var(--color-primary)' }}
+                                      >
+                                        {span.text}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p
+                                  lang={t.language}
+                                  className={`text-text-primary ${
+                                    devanagari
+                                      ? 'font-transcript-body-hi text-transcript-body-hi'
+                                      : 'font-transcript-body text-transcript-body'
+                                  }`}
+                                >
+                                  {showRawAsr && t.raw_text ? t.raw_text : (t.cleaned_text || t.text)}
+                                </p>
+                              )}
                             {showRawAsr && t.raw_text && t.cleaned_text && t.raw_text !== t.cleaned_text && (
                               <p className="mt-2 font-meta-data text-meta-data text-text-faint border-l-2 border-border pl-3">
                                 Cleaned: {t.cleaned_text}

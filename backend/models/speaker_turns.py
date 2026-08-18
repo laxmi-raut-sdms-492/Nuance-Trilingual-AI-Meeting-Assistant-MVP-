@@ -158,16 +158,14 @@ def _start_turn(seg: dict) -> dict[str, Any]:
         "identified_as": seg.get("identified_as"),
         "confidence": seg.get("confidence", 0.0),
         "color": seg.get("color"),
-        # Provisional — _apply_dominant_language sets the final values once
-        # every segment in the turn has been seen.
+        "is_overlap": bool(seg.get("is_overlap", False)),
+        "candidate_speakers": list(seg.get("candidate_speakers") or []),
+        "candidate_labels": list(seg.get("candidate_labels") or []),
         "language": seg.get("language"),
         "language_name": seg.get("language_name"),
         "language_prob": seg.get("language_prob", 0.0),
         "language_detected": seg.get("language_detected"),
         "language_fallback": seg.get("language_fallback", False),
-        # Mixed-segment flags are per segment, not per language, so they are
-        # carried on the turn directly: a turn is suspect if ANY segment in it
-        # is, and keeps the narrowest (most ambiguous) margin it saw.
         "language_margin": float(seg.get("language_margin", 1.0) or 0.0),
         "language_mixed_suspected": bool(seg.get("language_mixed_suspected", False)),
         "languages": [],
@@ -186,6 +184,17 @@ def _extend_turn(turn: dict, seg: dict) -> None:
         turn["raw_parts"].append(raw)
     turn["end_sec"] = float(seg.get("end_sec") or turn["end_sec"])
     turn["segment_count"] = turn.get("segment_count", 1) + 1
+    if seg.get("is_overlap"):
+        turn["is_overlap"] = True
+        for cs in seg.get("candidate_speakers") or []:
+            if cs not in turn["candidate_speakers"]:
+                turn["candidate_speakers"].append(cs)
+        for cl in seg.get("candidate_labels") or []:
+            if cl not in turn["candidate_labels"]:
+                turn["candidate_labels"].append(cl)
+        if len(turn["candidate_speakers"]) > 1:
+            turn["speaker"] = " + ".join(turn["candidate_speakers"])
+            turn["speaker_label"] = " + ".join(turn["candidate_labels"])
     turn["language_margin"] = min(
         float(turn.get("language_margin", 1.0) or 0.0),
         float(seg.get("language_margin", 1.0) or 0.0),
@@ -243,6 +252,11 @@ def _finalize_turn(turn: dict) -> dict:
     turn["raw_text"] = raw_text
     turn["cleaned_text"] = cleaned
     turn["text"] = cleaned
+
+    if turn.get("is_overlap") and turn.get("candidate_speakers") and len(turn["candidate_speakers"]) > 1:
+        turn["speaker"] = " + ".join(turn["candidate_speakers"])
+        if turn.get("candidate_labels") and len(turn["candidate_labels"]) > 1:
+            turn["speaker_label"] = " + ".join(turn["candidate_labels"])
 
     _apply_dominant_language(turn)
     langs = turn.pop("languages", [])

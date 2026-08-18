@@ -21,9 +21,9 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 # --- Audio ---
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
-SCD_WINDOW_SECONDS = 1.5
+SCD_WINDOW_SECONDS = 1.0
 SCD_HOP_SECONDS = float(os.getenv("SCD_HOP_SECONDS", "0.25"))
-SCD_CHANGE_THRESHOLD = 0.28
+SCD_CHANGE_THRESHOLD = 0.20
 SCD_MIN_SEGMENT_SECONDS = 2.0
 SCD_MIN_SUBSEGMENT_SECONDS = 1.0
 SILENCE_RMS_THRESHOLD = 0.01   # below this average amplitude, treat a segment as silence

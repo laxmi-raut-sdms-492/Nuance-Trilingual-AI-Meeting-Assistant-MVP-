@@ -504,11 +504,16 @@ class MeetingSession:
 
                 try:
                     entries = self._process_subsegment(sub_start, sub_end, sub_audio)
+                except (AttributeError, TypeError, NameError, KeyError) as e:
+                    logger.exception(f"[{sub_start:.1f}-{sub_end:.1f}s] Critical code error in segment processing: {e}")
+                    self.failed_segments += 1
+                    self.last_error = str(e)
+                    raise
                 except Exception as e:
                     # One bad segment (degenerate/NaN embedding, empty audio,
                     # unexpected model error) must not kill the rest of the
-                    # session — log it and keep going.
-                    logger.error(f"[{sub_start:.1f}-{sub_end:.1f}s] segment processing failed, skipping: {e}")
+                    # session — log it with full traceback and keep going.
+                    logger.error(f"[{sub_start:.1f}-{sub_end:.1f}s] segment processing failed, skipping: {e}", exc_info=True)
                     self.failed_segments += 1
                     self.last_error = str(e)
                     entries = []
@@ -549,7 +554,7 @@ class MeetingSession:
             for lab in candidate_labels:
                 if lab in self.diarizer.clusters:
                     # Ignore single-sample / noise fragment clusters when multiple clusters exist
-                    cluster_embs = self.diarizer.cluster_embeddings.get(lab, [])
+                    cluster_embs = self.diarizer.get_embeddings(lab)
                     if len(cluster_embs) < 2 and len(self.diarizer.clusters) > 1:
                         continue
                     st_emb = self.diarizer.get_centroid(lab)
@@ -569,11 +574,19 @@ class MeetingSession:
 
             candidate_labels = valid_candidate_labels
 
-            display_name = " + ".join(candidate_speakers) if len(candidate_speakers) > 1 else candidate_speakers[0]
-            identified_as = display_name
-            speaker_label = " + ".join(candidate_labels) if len(candidate_labels) > 1 else candidate_labels[0]
-            stable_embedding = embedding
-            confidence = 0.5
+            if len(candidate_speakers) < 2:
+                is_overlap = False
+                display_name = candidate_speakers[0]
+                identified_as = display_name
+                speaker_label = candidate_labels[0]
+                stable_embedding = self.diarizer.get_centroid(speaker_label) if speaker_label in self.diarizer.clusters else embedding
+                confidence = 0.5
+            else:
+                display_name = " + ".join(candidate_speakers)
+                identified_as = display_name
+                speaker_label = " + ".join(candidate_labels)
+                stable_embedding = embedding
+                confidence = 0.5
         else:
             stable_embedding = self.diarizer.get_centroid(speaker_label)
             identified_as, confidence = self.identifier.identify(stable_embedding)

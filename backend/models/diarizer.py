@@ -94,8 +94,8 @@ class SessionDiarizer:
             th1 = self._effective_threshold(c1_label)
             th2 = self._effective_threshold(c2_label)
 
-            if d1 <= th1 + 0.12 and d2 <= th2 + 0.12:
-                if (d2 - d1 <= 0.10) or (dmix <= min(d1, d2) + 0.04):
+            if d1 <= th1 + 0.05 and d2 <= th2 + 0.05:
+                if (d2 - d1 <= 0.06) and (dmix <= min(d1, d2) + 0.03):
                     combo_label = f"{c1_label} & {c2_label}"
                     self.last_segment_info = {
                         "is_overlap": True,
@@ -201,6 +201,14 @@ class SessionDiarizer:
 
     def get_centroid(self, label: str) -> np.ndarray:
         return self.clusters[label]["centroid"]
+
+    def get_embeddings(self, label: str) -> list:
+        return self.clusters.get(label, {}).get("embeddings", [])
+
+    @property
+    def cluster_embeddings(self) -> dict[str, list]:
+        """Backward-compatibility property mapping cluster labels to sample embeddings."""
+        return {label: data.get("embeddings", []) for label, data in self.clusters.items()}
 
     def get_confidence(self, label: str) -> float:
         count = self.clusters[label]["count"]

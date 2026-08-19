@@ -218,11 +218,23 @@ class SessionDiarizer:
                 remaining.append(pending)
         self._pending_short_segments = remaining
 
-    def get_centroid(self, label: str) -> np.ndarray:
-        return self.clusters[label]["centroid"]
+    def get_centroid(self, label: str) -> np.ndarray | None:
+        if label in self.clusters:
+            return self.clusters[label]["centroid"]
+        remap = getattr(self, "_remap", {}) or {}
+        target = remap.get(label)
+        if target and target in self.clusters:
+            return self.clusters[target]["centroid"]
+        return None
 
     def get_embeddings(self, label: str) -> list:
-        return self.clusters.get(label, {}).get("embeddings", [])
+        if label in self.clusters:
+            return self.clusters[label].get("embeddings", [])
+        remap = getattr(self, "_remap", {}) or {}
+        target = remap.get(label)
+        if target and target in self.clusters:
+            return self.clusters[target].get("embeddings", [])
+        return []
 
     @property
     def cluster_embeddings(self) -> dict[str, list]:
@@ -230,7 +242,14 @@ class SessionDiarizer:
         return {label: data.get("embeddings", []) for label, data in self.clusters.items()}
 
     def get_confidence(self, label: str) -> float:
-        count = self.clusters[label]["count"]
+        cluster = self.clusters.get(label)
+        if not cluster:
+            remap = getattr(self, "_remap", {}) or {}
+            target = remap.get(label)
+            cluster = self.clusters.get(target) if target else None
+        if not cluster:
+            return 0.5
+        count = cluster.get("count", 1)
         return min(count / 20.0, 1.0)
 
     # -- internals --

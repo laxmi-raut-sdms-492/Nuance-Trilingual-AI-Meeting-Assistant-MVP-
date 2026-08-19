@@ -611,6 +611,8 @@ class MeetingSession:
                 confidence = 0.5
         else:
             stable_embedding = self.diarizer.get_centroid(speaker_label)
+            if stable_embedding is None:
+                stable_embedding = embedding
             identified_as, confidence = self.identifier.identify(stable_embedding)
             candidate_speakers = [identified_as if identified_as != UNKNOWN else speaker_label]
 

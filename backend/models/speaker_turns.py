@@ -40,13 +40,24 @@ _ROMAN_INDIC_MAP = {
 }
 
 
+def strip_unsupported_foreign_scripts(text: str) -> str:
+    """
+    Remove hallucinated foreign Indic script characters (Kannada, Malayalam, Gujarati,
+    Odia, Bengali, Tamil, Telugu, Gurmukhi) that are not part of English, Hindi, or Marathi.
+    """
+    foreign_pattern = r"[\u0980-\u09FF\u0A00-\u0AFF\u0B00-\u0BFF\u0C00-\u0CFF\u0D00-\u0D7F]+"
+    cleaned = re.sub(foreign_pattern, "", text or "")
+    return _normalize_whitespace(cleaned)
+
+
 def rule_based_cleanup(raw_text: str) -> str:
     """
     Light formatting only — no word invention. Adds spacing and terminal
     punctuation when clearly missing; preserves Devanagari and Latin mix.
     Converts common Romanized Indic words in Devanagari sentences into Devanagari.
+    Strips hallucinated foreign scripts outside English, Hindi, and Marathi.
     """
-    text = _normalize_whitespace(raw_text)
+    text = strip_unsupported_foreign_scripts(raw_text)
     if not text:
         return text
 

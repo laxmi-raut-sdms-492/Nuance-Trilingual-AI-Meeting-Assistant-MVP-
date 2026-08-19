@@ -181,10 +181,16 @@ class SarvamSTTAdapter(STTAdapter):
                 with_timestamps=False,
                 input_audio_codec="wav",
             )
-        except ApiError as exc:
-            raise STTProviderError(f"Sarvam API error ({exc})") from exc
-        except Exception as exc:  # noqa: BLE001 - network/timeout/SDK internals
-            raise STTProviderError(f"Sarvam request failed: {exc}") from exc
+        except Exception as exc:  # ApiError (e.g. 402 quota), timeout, network
+            logger.warning(
+                f"Sarvam STT failed ({exc}) — falling back to Local STT (Whisper)"
+            )
+            if not hasattr(self, "_local_fallback"):
+                from stt.local_adapter import LocalSTTAdapter
+                self._local_fallback = LocalSTTAdapter()
+            return self._local_fallback.transcribe_with_context(
+                audio, start_sec=0.0, end_sec=len(audio) / SAMPLE_RATE, hint_language=hint_language
+            )
 
         return self._stamp(self._to_contract(response, hint_language))
 

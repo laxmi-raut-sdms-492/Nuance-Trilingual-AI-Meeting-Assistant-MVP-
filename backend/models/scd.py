@@ -50,19 +50,25 @@ def split_on_speaker_change(audio: np.ndarray) -> list[tuple[int, int]]:
     intended to be single-speaker. If no change is detected (or the
     segment is too short to analyze), returns the whole segment as one.
     """
+    from config import SCD_WINDOW_SECONDS, SCD_HOP_SECONDS, SCD_MIN_SUBSEGMENT_SECONDS, SCD_MIN_SEGMENT_SECONDS
+
+    window_samples = int(SCD_WINDOW_SECONDS * SAMPLE_RATE)
+    hop_samples = int(SCD_HOP_SECONDS * SAMPLE_RATE)
+    min_subsegment_samples = int(SCD_MIN_SUBSEGMENT_SECONDS * SAMPLE_RATE)
+
     n = len(audio)
 
-    if n < SCD_MIN_SEGMENT_SECONDS * SAMPLE_RATE or n < WINDOW_SAMPLES * 2:
+    if n < SCD_MIN_SEGMENT_SECONDS * SAMPLE_RATE or n < window_samples * 2:
         return [(0, n)]
 
     window_embeddings = []
     window_starts = []
     pos = 0
-    while pos + WINDOW_SAMPLES <= n:
-        window = audio[pos : pos + WINDOW_SAMPLES]
+    while pos + window_samples <= n:
+        window = audio[pos : pos + window_samples]
         window_embeddings.append(get_embedding(window))
         window_starts.append(pos)
-        pos += HOP_SAMPLES
+        pos += hop_samples
 
     if len(window_embeddings) < 3:
         return [(0, n)]
@@ -89,8 +95,8 @@ def split_on_speaker_change(audio: np.ndarray) -> list[tuple[int, int]]:
 def _adaptive_change_threshold(distances: list[float]) -> float:
     """
     Per-segment threshold: a spike must exceed both the global floor and this
-    segment's own baseline variation. Prevents one speaker's volume/style shifts
-    from being treated as a speaker change.
+    segment's own baseline variation. Capped at 0.35 max to prevent multi-speaker
+    dialogue drift from obscuring real speaker transitions.
     """
     if len(distances) < 3:
         return SCD_CHANGE_THRESHOLD
@@ -98,38 +104,48 @@ def _adaptive_change_threshold(distances: list[float]) -> float:
     median = float(np.median(arr))
     mad = float(np.median(np.abs(arr - median))) + 1e-6
     # Require a spike meaningfully above typical window-to-window drift.
-    adaptive = median + max(2.5 * mad, 0.08)
-    return max(SCD_CHANGE_THRESHOLD, adaptive)
+    adaptive = median + max(1.5 * mad, 0.05)
+    return min(0.35, max(SCD_CHANGE_THRESHOLD, adaptive))
 
 
-def _find_change_points(distances: list[float], window_starts: list[int]) -> list[int]:
+def _find_change_points(distances: list[float], window_starts: list[int], hop_samples: int | None = None) -> list[int]:
     """Local maxima and strong spikes in the distance sequence that clear the threshold."""
+    if hop_samples is None:
+        from config import SCD_HOP_SECONDS
+        hop_samples = int(SCD_HOP_SECONDS * SAMPLE_RATE)
+
     threshold = _adaptive_change_threshold(distances)
     points = []
     for i in range(len(distances)):
-        is_peak = True
-        if i > 0 and distances[i] < distances[i - 1]:
-            is_peak = False
-        if i < len(distances) - 1 and distances[i] < distances[i + 1]:
-            is_peak = False
-        if is_peak and distances[i] > threshold:
-            change_sample = window_starts[i] + HOP_SAMPLES
-            points.append(change_sample)
-            logger.debug(
-                f"SCD change @ window {i}: dist={distances[i]:.3f} > {threshold:.3f}"
-            )
+        d = distances[i]
+        if d < threshold:
+            continue
+        is_left_ok = (i == 0 or d >= distances[i - 1])
+        is_right_ok = (i == len(distances) - 1 or d >= distances[i + 1])
+        if is_left_ok or is_right_ok:
+            window_slice = distances[max(0, i - 1) : min(len(distances), i + 2)]
+            if d == max(window_slice):
+                change_sample = window_starts[i] + hop_samples
+                points.append(change_sample)
+                logger.debug(
+                    f"SCD change @ window {i}: dist={d:.3f} > {threshold:.3f}"
+                )
     return points
 
 
-def _enforce_min_spacing(change_points: list[int], total_samples: int) -> list[int]:
+def _enforce_min_spacing(change_points: list[int], total_samples: int, min_subsegment_samples: int | None = None) -> list[int]:
     """Drop change points that would create a sub-segment shorter than the minimum."""
     if not change_points:
         return []
 
+    if min_subsegment_samples is None:
+        from config import SCD_MIN_SUBSEGMENT_SECONDS
+        min_subsegment_samples = int(SCD_MIN_SUBSEGMENT_SECONDS * SAMPLE_RATE)
+
     kept = []
     last = 0
     for cp in sorted(change_points):
-        if cp - last >= MIN_SUBSEGMENT_SAMPLES and total_samples - cp >= MIN_SUBSEGMENT_SAMPLES:
+        if cp - last >= min_subsegment_samples and total_samples - cp >= min_subsegment_samples:
             kept.append(cp)
             last = cp
     return kept

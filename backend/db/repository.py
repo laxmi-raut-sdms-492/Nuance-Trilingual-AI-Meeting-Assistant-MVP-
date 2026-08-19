@@ -92,6 +92,59 @@ def _split_language_mix(value: str | None) -> list[str] | None:
     return codes or None
 
 
+def _clean_speaker_stats(raw_stats: list[dict]) -> list[dict]:
+    if not raw_stats:
+        return []
+    # If no composite overlap names exist, return raw_stats untouched to preserve exact DB schema
+    has_overlap = any("+" in (s.get("name") or "") or " & " in (s.get("name") or "") for s in raw_stats)
+    if not has_overlap:
+        return raw_stats
+
+    totals: dict[str, float] = {}
+    colors: dict[str, str] = {}
+
+    for s in raw_stats:
+        name = (s.get("name") or "").strip()
+        if not name:
+            continue
+        secs = float(s.get("seconds") or 0.0)
+        if secs <= 0:
+            continue
+
+        if "+" in name or " & " in name:
+            parts = [p.strip() for p in re.split(r"\s*(?:\+|\&)\s*", name) if p.strip()]
+            share = secs / max(len(parts), 1)
+            for p in parts:
+                totals[p] = totals.get(p, 0.0) + share
+                if p not in colors and s.get("color"):
+                    colors[p] = s["color"]
+        else:
+            totals[name] = totals.get(name, 0.0) + secs
+            if s.get("color"):
+                colors.setdefault(name, s["color"])
+
+    grand_total = sum(totals.values())
+    if grand_total <= 0:
+        return []
+
+    from config import SPEAKER_COLORS
+    from pipeline import format_duration
+    sorted_items = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
+    res = []
+    for idx, (spk, secs) in enumerate(sorted_items):
+        color = colors.get(spk) or SPEAKER_COLORS[idx % len(SPEAKER_COLORS)]
+        res.append(
+            {
+                "name": spk,
+                "seconds": round(secs, 1),
+                "time": format_duration(secs),
+                "pct": round(secs / grand_total * 100, 1),
+                "color": color,
+            }
+        )
+    return res
+
+
 def _to_dict(meeting: Meeting) -> dict:
     """ORM row -> the exact JSON shape the frontend already consumes."""
     return {
@@ -124,7 +177,7 @@ def _to_dict(meeting: Meeting) -> dict:
             {"code": l.code, "name": l.name, "seconds": l.seconds, "pct": l.pct}
             for l in meeting.languages
         ],
-        "speakerStats": [
+        "speakerStats": _clean_speaker_stats([
             {
                 "name": s.name,
                 "seconds": s.seconds,
@@ -133,7 +186,7 @@ def _to_dict(meeting: Meeting) -> dict:
                 "color": s.color,
             }
             for s in meeting.speaker_stats
-        ],
+        ]),
         "transcript": [
             {
                 "start_sec": t.start_sec,
@@ -155,6 +208,9 @@ def _to_dict(meeting: Meeting) -> dict:
                 "is_overlap": bool(t.is_overlap),
                 "candidate_speakers": _split_language_mix(t.candidate_speakers),
                 "candidate_labels": _split_language_mix(t.candidate_labels),
+                "is_separated_overlap": bool(t.is_separated_overlap),
+                "separation_confidence": t.separation_confidence,
+                "attributed_spans": json.loads(t.attributed_spans) if t.attributed_spans else None,
                 "raw_text": t.raw_text,
                 "cleaned_text": t.cleaned_text,
                 "text": t.cleaned_text or t.text,
@@ -270,6 +326,9 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 is_overlap=bool(t.get("is_overlap", False)),
                 candidate_speakers=_join_language_mix(t.get("candidate_speakers")),
                 candidate_labels=_join_language_mix(t.get("candidate_labels")),
+                is_separated_overlap=bool(t.get("is_separated_overlap", False)),
+                separation_confidence=t.get("separation_confidence"),
+                attributed_spans=json.dumps(t["attributed_spans"]) if isinstance(t.get("attributed_spans"), (list, dict)) else (t["attributed_spans"] if isinstance(t.get("attributed_spans"), str) else None),
                 raw_text=t.get("raw_text") or t.get("text", ""),
                 cleaned_text=t.get("cleaned_text") or t.get("text", ""),
                 text=t.get("cleaned_text") or t.get("text", ""),

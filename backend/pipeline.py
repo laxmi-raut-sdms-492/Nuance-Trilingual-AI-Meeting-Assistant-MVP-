@@ -61,12 +61,24 @@ from stt.base import STTAdapter
 from stt.local_adapter import LocalSTTAdapter
 
 logger = logging.getLogger("pipeline")
-MIN_SPEECH_SAMPLES = int(MIN_SPEECH_SECONDS * SAMPLE_RATE)
+
+
+def _get_min_speech_samples() -> int:
+    from config import MIN_SPEECH_SECONDS, SAMPLE_RATE
+    return int(MIN_SPEECH_SECONDS * SAMPLE_RATE)
+
+
+MIN_SPEECH_SAMPLES = _get_min_speech_samples()
 
 # How much audio to hand the segmenter at a time when processing an uploaded
 # file. Feeding a 60-minute array in one call would work, but processing in
 # blocks keeps memory flat and lets progress be reported as it goes.
 FILE_BLOCK_SAMPLES = 30 * SAMPLE_RATE
+
+
+def _is_generic(name: str) -> bool:
+    import re
+    return bool(re.match(r"(?i)^speaker[_\s]?\d+$", str(name or "").strip()))
 
 
 def format_timestamp(seconds: float) -> str:
@@ -155,7 +167,7 @@ class MeetingSession:
         """
         if self.transcript:
             return []
-        if len(audio) < MIN_SPEECH_SAMPLES or rms(audio) < self._silence_threshold:
+        if len(audio) < _get_min_speech_samples() or rms(audio) < self._silence_threshold:
             return []
 
         profile = self._upload_profile
@@ -255,11 +267,6 @@ class MeetingSession:
         from config import WITHIN_MEETING_MERGE_SIMILARITY
         from models.speaker_matcher import cosine_similarity
 
-        def _is_generic(name: str) -> bool:
-            import re
-
-            return bool(re.match(r"(?i)^speaker[_\s]?\d+$", str(name or "").strip()))
-
         # label -> (name, confidence)
         resolved: dict[str, tuple[str, float]] = {}
 
@@ -337,6 +344,25 @@ class MeetingSession:
                 )
 
         for entry in self.transcript:
+            if entry.get("is_overlap"):
+                c_labels = entry.get("candidate_labels") or []
+                c_speakers = entry.get("candidate_speakers") or []
+                resolved_candidates = []
+                for lab, spk in zip(c_labels, c_speakers if len(c_speakers) == len(c_labels) else c_labels):
+                    if lab in resolved:
+                        resolved_candidates.append(resolved[lab][0])
+                    elif spk in resolved:
+                        resolved_candidates.append(resolved[spk][0])
+                    elif not _is_generic(str(spk)):
+                        resolved_candidates.append(spk)
+                    else:
+                        resolved_candidates.append(lab)
+                if resolved_candidates:
+                    entry["candidate_speakers"] = resolved_candidates
+                    disp = " + ".join(resolved_candidates)
+                    entry["speaker"] = disp
+                    entry["identified_as"] = disp
+                continue
             label = entry.get("speaker_label")
             if not label:
                 continue
@@ -457,20 +483,16 @@ class MeetingSession:
 
         total = max(len(audio), 1)
         entries = []
-        vad_emitted = 0
 
-        for offset in range(0, len(audio), FILE_BLOCK_SAMPLES):
-            block = audio[offset : offset + FILE_BLOCK_SAMPLES]
-            segs = self.segmenter.process(block)
-            vad_emitted += len(segs)
+        # Whole-file VAD segmentation prevents sentence truncation across 30s block boundaries
+        # and guarantees that trailing speech at the end of the meeting is never lost.
+        from models.vad import batch_vad_segments
+        segs = batch_vad_segments(audio, threshold=profile.vad_threshold)
+        if segs:
             entries.extend(self._consume(segs))
-            if on_progress:
-                on_progress(min((offset + len(block)) / total, 0.99))
+        else:
+            entries.extend(self._maybe_vad_fallback(audio, 0))
 
-        flush_segs = self.segmenter.flush()
-        vad_emitted += len(flush_segs)
-        entries.extend(self._consume(flush_segs))
-        entries.extend(self._maybe_vad_fallback(audio, vad_emitted))
         self._finalize_session()
         if on_progress:
             on_progress(1.0)
@@ -539,7 +561,7 @@ class MeetingSession:
         undo. Sharing the embedding also keeps self._embeddings aligned with
         self.transcript, which the offline recluster pass requires.
         """
-        if len(audio) < MIN_SPEECH_SAMPLES or rms(audio) < self._silence_threshold:
+        if len(audio) < _get_min_speech_samples() or rms(audio) < self._silence_threshold:
             return []  # too short or too quiet to be meaningful speech
 
         embedding = get_embedding(audio)
@@ -576,11 +598,11 @@ class MeetingSession:
 
             if len(candidate_speakers) < 2:
                 is_overlap = False
-                display_name = candidate_speakers[0]
-                identified_as = display_name
                 speaker_label = candidate_labels[0]
                 stable_embedding = self.diarizer.get_centroid(speaker_label) if speaker_label in self.diarizer.clusters else embedding
-                confidence = 0.5
+                identified_as, confidence = self.identifier.identify(stable_embedding)
+                display_name = identified_as if identified_as != UNKNOWN else candidate_speakers[0]
+                candidate_speakers = [display_name]
             else:
                 display_name = " + ".join(candidate_speakers)
                 identified_as = display_name
@@ -591,6 +613,21 @@ class MeetingSession:
             stable_embedding = self.diarizer.get_centroid(speaker_label)
             identified_as, confidence = self.identifier.identify(stable_embedding)
             candidate_speakers = [identified_as if identified_as != UNKNOWN else speaker_label]
+
+        if is_overlap and len(candidate_labels) >= 2:
+            attributed_entry = self._attribute_overlap(
+                start,
+                end,
+                audio,
+                embedding=embedding,
+                candidate_labels=candidate_labels,
+                candidate_speakers=candidate_speakers,
+                speaker_label=speaker_label,
+                display_name=display_name,
+                confidence=confidence,
+            )
+            if attributed_entry:
+                return [attributed_entry]
 
         try:
             pieces = split_on_language_change(audio)
@@ -628,6 +665,95 @@ class MeetingSession:
 
         return entries
 
+    def _attribute_overlap(
+        self,
+        start: float,
+        end: float,
+        audio,
+        *,
+        embedding,
+        candidate_labels: list[str],
+        candidate_speakers: list[str],
+        speaker_label: str,
+        display_name: str,
+        confidence: float,
+    ) -> dict | None:
+        """
+        Try to resolve WHO said WHAT inside an overlap window via source
+        separation, and fold the result into one transcript entry.
+        """
+        from models.overlap_attribution import resolve_overlap_attribution
+
+        try:
+            attributed = resolve_overlap_attribution(
+                audio,
+                start=start,
+                end=end,
+                candidate_labels=candidate_labels,
+                diarizer=self.diarizer,
+                identifier=self.identifier,
+                stt_adapter=self.stt_adapter,
+                dominant_language=self.dominant_language,
+            )
+        except Exception as exc:
+            logger.warning(f"[{start:.1f}-{end:.1f}s] overlap attribution failed, falling back: {exc}")
+            return None
+
+        if not attributed:
+            return None
+
+        spans = attributed[0].get("attributed_spans") or []
+        if len(spans) < 2:
+            return None
+
+        for span in spans:
+            span["color"] = self._color_for(span.get("speaker_label") or speaker_label)
+
+        separation_confidence = attributed[0].get("separation_confidence")
+        combined_text = " / ".join(f"{s['speaker']}: {s['text']}" for s in spans if s.get("text"))
+        language = self.dominant_language
+
+        entry = {
+            "start_sec": round(start, 2),
+            "end_sec": round(end, 2),
+            "time": format_timestamp(start),
+            "speaker": display_name,
+            "speaker_label": speaker_label,
+            "identified_as": display_name,
+            "confidence": confidence,
+            "color": self._color_for(speaker_label),
+            "is_overlap": True,
+            "is_separated_overlap": True,
+            "separation_confidence": separation_confidence,
+            "attributed_spans": spans,
+            "candidate_speakers": candidate_speakers,
+            "candidate_labels": candidate_labels,
+            "language": language,
+            "language_name": LANGUAGE_NAMES.get(language, language),
+            "language_prob": 1.0,
+            "language_detected": language,
+            "language_fallback": False,
+            "adapter": self.stt_adapter.adapter_type,
+            "provider": self.stt_adapter.provider_name,
+            "model": self.stt_adapter.model_name,
+            "language_margin": 1.0,
+            "language_mixed_suspected": False,
+            "raw_text": combined_text,
+            "text": combined_text,
+            "is_turn": False,
+        }
+        self.transcript.append(entry)
+        self._embeddings.append(np.asarray(embedding, dtype=np.float32).copy())
+        self._language_counts[language] = self._language_counts.get(language, 0) + 1
+        if self._on_transcript_update:
+            try:
+                self._on_transcript_update()
+            except Exception as exc:
+                logger.warning(
+                    f"[{self.session_id}] transcript update callback failed: {exc}"
+                )
+        return entry
+
     def _transcribe_piece(
         self,
         start: float,
@@ -648,7 +774,7 @@ class MeetingSession:
         """
         Transcribe one language-homogeneous piece and append its entry.
         """
-        if len(audio) < MIN_SPEECH_SAMPLES:
+        if len(audio) < _get_min_speech_samples():
             return None
 
         hint = lcd_language or self.dominant_language
@@ -671,7 +797,16 @@ class MeetingSession:
         }
         if duration < 1.8 and text_clean in FILLER_HALLUCINATIONS:
             logger.info(f"[{start:.1f}-{end:.1f}s] dropping STT noise hallucination: {asr['text']!r}")
-            return None
+        # Guard against hallucinated non-supported languages (e.g. Kannada 'kn') on short/noisy clips
+        from config import SUPPORTED_LANGUAGES
+        if asr.get("language") not in SUPPORTED_LANGUAGES:
+            logger.warning(
+                f"[{start:.1f}s] unsupported language '{asr.get('language')}' detected -> "
+                f"falling back to dominant language '{self.dominant_language}'"
+            )
+            asr["language"] = self.dominant_language
+            asr["language_name"] = LANGUAGE_NAMES.get(self.dominant_language, self.dominant_language)
+            asr["language_fallback"] = True
 
         self._language_counts[asr["language"]] = self._language_counts.get(asr["language"], 0) + 1
 
@@ -758,12 +893,43 @@ class MeetingSession:
         speaker_labels: dict[str, str] = {}
 
         for entry in self.transcript:
-            display = entry.get("speaker") or entry.get("speaker_label") or "Unknown"
-            colors.setdefault(display, entry.get("color") or SPEAKER_COLORS[0])
-            speaker_labels.setdefault(display, entry.get("speaker_label") or display)
-            totals[display] = totals.get(display, 0.0) + (
-                entry["end_sec"] - entry["start_sec"]
-            )
+            dur = max(float(entry.get("end_sec", 0)) - float(entry.get("start_sec", 0)), 0.0)
+            if dur <= 0:
+                continue
+
+            if entry.get("is_overlap"):
+                c_spks = entry.get("candidate_speakers") or []
+                clean_spks = [s for s in c_spks if s and "+" not in s and " & " not in s]
+                if not clean_spks:
+                    clean_spks = [entry.get("speaker") or "Unknown"]
+                share_dur = dur / len(clean_spks)
+                for spk in clean_spks:
+                    colors.setdefault(spk, self._color_for(spk))
+                    speaker_labels.setdefault(spk, spk)
+                    totals[spk] = totals.get(spk, 0.0) + share_dur
+            else:
+                display = entry.get("speaker") or entry.get("speaker_label") or "Unknown"
+                if "+" in display or " & " in display:
+                    parts = [p.strip() for p in re.split(r"\s*(?:\+|\&)\s*", display) if p.strip()]
+                    share_dur = dur / max(len(parts), 1)
+                    for spk in parts:
+                        colors.setdefault(spk, self._color_for(spk))
+                        speaker_labels.setdefault(spk, spk)
+                        totals[spk] = totals.get(spk, 0.0) + share_dur
+                else:
+                    colors.setdefault(display, entry.get("color") or self._color_for(display))
+                    speaker_labels.setdefault(display, entry.get("speaker_label") or display)
+                    totals[display] = totals.get(display, 0.0) + dur
+
+        named_speakers = [spk for spk in totals if not _is_generic(spk)]
+        if named_speakers:
+            filtered_totals = {}
+            for spk, secs in totals.items():
+                if _is_generic(spk) and secs < 5.0:
+                    continue
+                filtered_totals[spk] = secs
+            if filtered_totals:
+                totals = filtered_totals
 
         grand_total = sum(totals.values())
         if grand_total <= 0:

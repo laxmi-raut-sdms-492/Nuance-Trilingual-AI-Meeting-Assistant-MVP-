@@ -84,6 +84,131 @@ function MetaChip({ icon, children }) {
   )
 }
 
+const SPEAKER_PALETTE = [
+  '#3b82f6', // Blue
+  '#10b981', // Green
+  '#ef4444', // Red
+  '#f59e0b', // Amber
+  '#8b5cf6', // Purple
+  '#ec4899', // Pink
+  '#06b6d4', // Cyan
+  '#14b8a6', // Teal
+  '#f97316', // Orange
+  '#6366f1', // Indigo
+]
+
+function getSpeakerColor(name, speakerStats = []) {
+  if (!name) return SPEAKER_PALETTE[0]
+  const cleanName = String(name).trim()
+
+  const found = speakerStats?.find(
+    (s) => s.name?.toLowerCase() === cleanName.toLowerCase()
+  )
+  if (found && found.color) return found.color
+
+  if (/^speaker[_\s]?\d+$/i.test(cleanName)) {
+    const num = parseInt(cleanName.replace(/\D/g, ''), 10)
+    if (!isNaN(num)) return SPEAKER_PALETTE[num % SPEAKER_PALETTE.length]
+  }
+
+  let hash = 0
+  for (let i = 0; i < cleanName.length; i++) {
+    hash = cleanName.charCodeAt(i) + ((hash << 5) - hash)
+  }
+  return SPEAKER_PALETTE[Math.abs(hash) % SPEAKER_PALETTE.length]
+}
+
+function deriveAttributedSpans(t, speakerStats) {
+  if (t.attributed_spans && Array.isArray(t.attributed_spans) && t.attributed_spans.length > 0) {
+    return t.attributed_spans.map((s) => ({
+      speaker: s.speaker,
+      text: s.text,
+      color: getSpeakerColor(s.speaker, speakerStats),
+    }))
+  }
+
+  if (!t.is_overlap) return null
+
+  const uniqueSpks = getUniqueSpeakers(t.speaker, t.candidate_speakers)
+  if (uniqueSpks.length <= 1) return null
+
+  const fullText = (t.cleaned_text || t.text || '').trim()
+  if (!fullText) return null
+
+  const clauses = fullText.split(/(?<=[.!?])\s+|(?<=[,;])\s+/).filter(Boolean)
+  const targetClauses = clauses.length > 0 ? clauses : [fullText]
+
+  return targetClauses.map((clause, i) => {
+    const spk = uniqueSpks[i % uniqueSpks.length]
+    return {
+      speaker: spk,
+      text: clause,
+      color: getSpeakerColor(spk, speakerStats),
+    }
+  })
+}
+
+function getUniqueSpeakers(speakerStr, candidateSpeakers) {
+  let rawList = []
+  if (Array.isArray(candidateSpeakers) && candidateSpeakers.length > 0) {
+    rawList = candidateSpeakers
+  } else if (speakerStr) {
+    rawList = String(speakerStr).split(/\s*(?:\+|\&)\s*/).filter(Boolean)
+  }
+
+  const unique = []
+  const seen = new Set()
+  for (const item of rawList) {
+    const clean = String(item || '').trim()
+    const lower = clean.toLowerCase()
+    if (clean && !seen.has(lower)) {
+      seen.add(lower)
+      unique.push(clean)
+    }
+  }
+  return unique.length > 0 ? unique : [speakerStr || 'Speaker_00']
+}
+
+function MultiSpeakerLabel({ meetingId, speakerStr, candidateSpeakers, fallbackColor, onRenamed, enrolledSpeakers, speakerStats }) {
+  const parts = getUniqueSpeakers(speakerStr, candidateSpeakers)
+  if (parts.length > 1) {
+    return (
+      <span className="inline-flex items-center gap-1 flex-wrap font-label-sm text-label-sm uppercase">
+        {parts.map((p, idx) => {
+          const spkColor = getSpeakerColor(p, speakerStats)
+          return (
+            <span key={idx} className="inline-flex items-center gap-1">
+              {idx > 0 && <span className="text-text-muted text-[11px] font-bold normal-case">+</span>}
+              <SpeakerLabel
+                meetingId={meetingId}
+                speaker={p}
+                speakerLabel={p}
+                color={spkColor}
+                onRenamed={onRenamed}
+                enrolledSpeakers={enrolledSpeakers}
+              />
+            </span>
+          )
+        })}
+      </span>
+    )
+  }
+
+  const singleName = parts[0] || speakerStr
+  const spkColor = getSpeakerColor(singleName, speakerStats) || fallbackColor
+
+  return (
+    <SpeakerLabel
+      meetingId={meetingId}
+      speaker={singleName}
+      speakerLabel={singleName}
+      color={spkColor}
+      onRenamed={onRenamed}
+      enrolledSpeakers={enrolledSpeakers}
+    />
+  )
+}
+
 /**
  * Click a diarized label (e.g. "SPEAKER_00") to set a permanent name.
  * Saving always enrolls the voice so future meetings auto-label them.
@@ -114,7 +239,6 @@ function SpeakerLabel({ meetingId, speaker, speakerLabel, color, onRenamed, enro
     setError('')
     try {
       const key = speaker
-      // permanent=true (default): store voice profile for every future meeting.
       await meetingsApi.renameSpeaker(meetingId, key, trimmed, { remember: permanent })
       if (permanent) toast.success(`${trimmed} saved for all future meetings`)
       setEditing(false)
@@ -703,21 +827,26 @@ export default function MeetingDetails() {
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1.5 flex-wrap">
-                              <span
-                                className="w-2 h-2 rounded-full shrink-0"
-                                style={{ backgroundColor: t.color }}
-                              />
-                              <SpeakerLabel
+                              <span className="flex items-center gap-1 shrink-0">
+                                {(() => {
+                                  const parts = getUniqueSpeakers(t.speaker, t.candidate_speakers)
+                                  return parts.map((p, pIdx) => (
+                                    <span
+                                      key={pIdx}
+                                      className="w-2 h-2 rounded-full shrink-0"
+                                      style={{ backgroundColor: getSpeakerColor(p, meeting?.speakerStats) }}
+                                    />
+                                  ))
+                                })()}
+                              </span>
+                              <MultiSpeakerLabel
                                 meetingId={id}
-                                speaker={
-                                  t.is_overlap && t.candidate_speakers && t.candidate_speakers.length > 1
-                                    ? t.candidate_speakers.join(' + ')
-                                    : t.speaker
-                                }
-                                speakerLabel={t.speaker_label}
-                                color={t.color}
+                                speakerStr={t.speaker}
+                                candidateSpeakers={t.candidate_speakers}
+                                fallbackColor={t.color}
                                 onRenamed={load}
                                 enrolledSpeakers={enrolledSpeakers}
+                                speakerStats={meeting?.speakerStats}
                               />
                               {/* Language is per line, not per meeting — a
                                   trilingual meeting switches mid-conversation. */}
@@ -778,30 +907,41 @@ export default function MeetingDetails() {
                                 </span>
                               )}
                             </div>
-                            {t.attributed_spans && t.attributed_spans.length > 0 ? (
-                                <div className="flex flex-col gap-1.5 mt-1 border-l-2 border-amber-500/40 pl-3 py-1 bg-surface-raised/30 rounded-r">
-                                  {t.attributed_spans.map((span, sIdx) => (
-                                    <div key={sIdx} className="flex items-start gap-2">
-                                      <span
-                                        className="w-2.5 h-2.5 rounded-full shrink-0 mt-1.5"
-                                        style={{ backgroundColor: span.color || t.color || 'var(--color-primary)' }}
-                                      />
-                                      <span
-                                        className="font-semibold text-xs shrink-0"
-                                        style={{ color: span.color || t.color || 'var(--color-primary)' }}
-                                      >
-                                        {span.speaker}:
-                                      </span>
-                                      <span
-                                        className={devanagari ? 'font-transcript-body-hi' : 'font-transcript-body'}
-                                        style={{ color: span.color || t.color || 'var(--color-primary)' }}
-                                      >
-                                        {span.text}
-                                      </span>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
+                            {(() => {
+                              const spans = deriveAttributedSpans(t, meeting?.speakerStats)
+                              if (spans && spans.length > 0) {
+                                return (
+                                  <div className="flex flex-col gap-2 mt-2 border-l-2 border-amber-500/40 pl-3 py-1.5 bg-amber-500/5 rounded-r">
+                                    {spans.map((span, sIdx) => {
+                                      const spkColor = span.color || getSpeakerColor(span.speaker, meeting?.speakerStats)
+                                      return (
+                                        <div key={sIdx} className="flex items-start gap-2 text-sm">
+                                          <span
+                                            className="w-2.5 h-2.5 rounded-full shrink-0 mt-1.5"
+                                            style={{ backgroundColor: spkColor }}
+                                          />
+                                          <span
+                                            className="font-semibold text-xs shrink-0 mt-0.5"
+                                            style={{ color: spkColor }}
+                                          >
+                                            {span.speaker}:
+                                          </span>
+                                          <span
+                                            className={`px-2.5 py-1 rounded-md text-text-primary ${devanagari ? 'font-transcript-body-hi' : 'font-transcript-body'}`}
+                                            style={{
+                                              backgroundColor: `${spkColor}1F`,
+                                              borderLeft: `3px solid ${spkColor}`
+                                            }}
+                                          >
+                                            {span.text}
+                                          </span>
+                                        </div>
+                                      )
+                                    })}
+                                  </div>
+                                )
+                              }
+                              return (
                                 <p
                                   lang={t.language}
                                   className={`text-text-primary ${
@@ -812,7 +952,8 @@ export default function MeetingDetails() {
                                 >
                                   {showRawAsr && t.raw_text ? t.raw_text : (t.cleaned_text || t.text)}
                                 </p>
-                              )}
+                              )
+                            })()}
                             {showRawAsr && t.raw_text && t.cleaned_text && t.raw_text !== t.cleaned_text && (
                               <p className="mt-2 font-meta-data text-meta-data text-text-faint border-l-2 border-border pl-3">
                                 Cleaned: {t.cleaned_text}
@@ -1090,37 +1231,71 @@ export default function MeetingDetails() {
           </SidePanel>
 
           <SidePanel icon="group" title="Speakers">
-            {meeting.speakerStats?.length > 0 ? (
-              <div className="flex flex-col gap-4">
-                {meeting.speakerStats.map((s) => (
-                  <div key={s.name} className="flex items-center gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between font-meta-data text-meta-data">
-                        <span className="text-text-primary truncate">{s.name}</span>
-                        <span className="text-text-faint">{s.time}</span>
+            {(() => {
+              const cleanStats = (() => {
+                if (!meeting.speakerStats?.length) return []
+                const totals = {}
+                for (const s of meeting.speakerStats) {
+                  const name = String(s.name || '').trim()
+                  if (!name) continue
+                  const secs = parseFloat(s.seconds || 0)
+                  if (secs <= 0) continue
+
+                  const parts = name.split(/\s*(?:\+|\&)\s*/).filter(Boolean)
+                  const share = secs / Math.max(parts.length, 1)
+                  for (const p of parts) {
+                    totals[p] = (totals[p] || 0) + share
+                  }
+                }
+                const grandTotal = Object.values(totals).reduce((a, b) => a + b, 0)
+                if (grandTotal <= 0) return []
+
+                return Object.entries(totals)
+                  .map(([name, secs]) => ({
+                    name,
+                    seconds: Math.round(secs * 10) / 10,
+                    pct: Math.round((secs / grandTotal) * 1000) / 10,
+                    color: getSpeakerColor(name, meeting.speakerStats),
+                  }))
+                  .sort((a, b) => b.seconds - a.seconds)
+              })()
+
+              if (!cleanStats.length) {
+                return processing ? (
+                  <p className="font-meta-data text-meta-data text-text-muted">
+                    Speaker breakdown appears as segments are processed.
+                  </p>
+                ) : (
+                  <p className="font-meta-data text-meta-data text-text-muted">
+                    No speakers were detected in this recording.
+                  </p>
+                )
+              }
+
+              return (
+                <div className="flex flex-col gap-4">
+                  {cleanStats.map((s) => (
+                    <div key={s.name} className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between font-meta-data text-meta-data">
+                          <span className="text-text-primary truncate">{s.name}</span>
+                          <span className="text-text-faint">{s.seconds}s</span>
+                        </div>
+                        <div className="h-1.5 bg-surface-container-high rounded-full mt-1.5 overflow-hidden">
+                          <div
+                            className="h-full rounded-full progress-bar-fill"
+                            style={{ width: `${s.pct}%`, backgroundColor: s.color }}
+                          />
+                        </div>
                       </div>
-                      <div className="h-1.5 bg-surface-container-high rounded-full mt-1.5 overflow-hidden">
-                        <div
-                          className="h-full rounded-full progress-bar-fill"
-                          style={{ width: `${s.pct}%`, backgroundColor: s.color }}
-                        />
-                      </div>
+                      <span className="font-meta-data text-meta-data text-text-faint w-9 text-right">
+                        {s.pct}%
+                      </span>
                     </div>
-                    <span className="font-meta-data text-meta-data text-text-faint w-9 text-right">
-                      {s.pct}%
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : processing ? (
-              <p className="font-meta-data text-meta-data text-text-muted">
-                Speaker breakdown appears as segments are processed.
-              </p>
-            ) : (
-              <p className="font-meta-data text-meta-data text-text-muted">
-                No speakers were detected in this recording.
-              </p>
-            )}
+                  ))}
+                </div>
+              )
+            })()}
           </SidePanel>
 
           <SidePanel icon="translate" title="Languages">

@@ -83,7 +83,7 @@ export default function AudioRecorder({
         setSeconds(0)
       }
 
-      recorder.start()
+      recorder.start(250)
       mediaRecorderRef.current = recorder
       secondsRef.current = 0
       setSeconds(0)

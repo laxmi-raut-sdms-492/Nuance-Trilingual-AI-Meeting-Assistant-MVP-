@@ -227,6 +227,9 @@ class TranscriptLine(Base):
     is_overlap: Mapped[bool] = mapped_column(nullable=False, default=False)
     candidate_speakers: Mapped[str | None] = mapped_column(String(255))
     candidate_labels: Mapped[str | None] = mapped_column(String(255))
+    is_separated_overlap: Mapped[bool] = mapped_column(nullable=False, default=False)
+    separation_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    attributed_spans: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Raw ASR verbatim output; cleaned_text is the readable turn after merge/cleanup.
     raw_text: Mapped[str | None] = mapped_column(Text)

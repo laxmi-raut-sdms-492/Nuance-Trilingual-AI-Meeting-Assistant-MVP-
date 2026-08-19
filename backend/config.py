@@ -21,18 +21,18 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 # --- Audio ---
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
-SCD_WINDOW_SECONDS = 1.0
+SCD_WINDOW_SECONDS = float(os.getenv("SCD_WINDOW_SECONDS", "0.6"))
 SCD_HOP_SECONDS = float(os.getenv("SCD_HOP_SECONDS", "0.25"))
-SCD_CHANGE_THRESHOLD = 0.20
+SCD_CHANGE_THRESHOLD = float(os.getenv("SCD_CHANGE_THRESHOLD", "0.13"))
 SCD_MIN_SEGMENT_SECONDS = 2.0
-SCD_MIN_SUBSEGMENT_SECONDS = 1.0
-SILENCE_RMS_THRESHOLD = 0.01   # below this average amplitude, treat a segment as silence
+SCD_MIN_SUBSEGMENT_SECONDS = 1.2
+SILENCE_RMS_THRESHOLD = float(os.getenv("SILENCE_RMS_THRESHOLD", "0.002"))   # below this average amplitude, treat a segment as silence
 
 # --- Voice Activity Detection (speech segmentation) ---
 # Segments are now bounded by real speech start/pause events (Silero VAD),
 # not a fixed window — this replaces the old CHUNK_SECONDS approach.
 MAX_SEGMENT_SECONDS = 25.0      # allow complete sentences to finish at natural pause events
-MIN_SILENCE_MS = 400           # how long a pause must be before a segment is considered "ended"
+MIN_SILENCE_MS = int(os.getenv("MIN_SILENCE_MS", "300"))           # how long a pause must be before a segment is considered "ended"
 # When Silero finds no speech but the file is non-silent, process uploads up to
 # this length as one segment so Whisper sees full context. Longer files are
 # split into MAX_SEGMENT_SECONDS windows.
@@ -44,14 +44,15 @@ VAD_BATCH_FALLBACK_THRESHOLD = 0.15
 # speech drowned out — run a notch filter before VAD/Whisper.
 FLAT_TONE_RMS_STD_MAX = 0.005
 HUM_NOTCH_FREQ_HZ = 220.0
-# Discard segments shorter than this. Raised from 0.3 after a 0.7s segment
-# produced "Thank you for watching. Be safe, and I'll see you next time. Bye."
-# — a pure hallucination. Whisper's encoder always consumes exactly 30s of mel,
-# so a 0.7s clip is zero-padded to 98% silence, which is precisely the input
-# distribution that maps to YouTube outro captions in its training data. Under
-# ~1s there is not enough audio to transcribe reliably anyway, so the cheapest
-# defence is to never hand Whisper the clip at all.
-MIN_SPEECH_SECONDS = 1.0
+# Minimum speech length (seconds) — 0.35s allows live mic streaming chunks to be captured cleanly
+MIN_SPEECH_SECONDS = 0.35
+
+# Supported language codes for LID validation and fallback
+SUPPORTED_LANGUAGES = set(
+    lang.strip().lower()
+    for lang in os.getenv("SUPPORTED_LANGUAGES", "en,hi,mr").split(",")
+    if lang.strip()
+)
 
 # --- Models ---
 EMBEDDING_MODEL_SOURCE = "speechbrain/spkrec-ecapa-voxceleb"
@@ -283,6 +284,8 @@ SINGLE_SPEAKER_P90_DISTANCE = float(os.getenv("SINGLE_SPEAKER_P90_DISTANCE", "0.
 
 # --- Overlap Source Separation ---
 # Opt-in additive feature flag — disabled by default to safeguard standard pipeline
+# (pre-existing behaviour) whenever separation is unavailable or its
+# confidence is below OVERLAP_MIN_CONFIDENCE — never a hard failure.
 OVERLAP_SEPARATION_ENABLED = os.getenv("OVERLAP_SEPARATION_ENABLED", "0").lower() in ("1", "true", "yes")
 OVERLAP_MIN_CONFIDENCE = float(os.getenv("OVERLAP_MIN_CONFIDENCE", "0.45"))
 SOURCE_SEPARATION_MODEL = os.getenv("SOURCE_SEPARATION_MODEL", "speechbrain/sepformer-wsj02mix")

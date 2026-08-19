@@ -95,7 +95,9 @@ class SessionDiarizer:
             th2 = self._effective_threshold(c2_label)
 
             if d1 <= th1 + 0.05 and d2 <= th2 + 0.05:
-                if (d2 - d1 <= 0.06) and (dmix <= min(d1, d2) + 0.03):
+                relative_gap = (d2 - d1) / max(d1, 1e-5)
+                # Overlap triggered ONLY when d2 and d1 are almost identical (true voice collision)
+                if (d2 - d1 <= 0.04 and relative_gap <= 0.15) or (dmix < min(d1, d2) - 0.01):
                     combo_label = f"{c1_label} & {c2_label}"
                     self.last_segment_info = {
                         "is_overlap": True,
@@ -163,6 +165,23 @@ class SessionDiarizer:
                 "speaker_label": label,
             }
             return label
+
+        # Gated fallback: Do NOT mint a brand new cluster from a short or unconfirmed segment
+        # if it is reasonably close (< 0.52) to an existing speaker.
+        if self.clusters and (duration < 3.0 or len(self._candidates) < NEW_CLUSTER_EVIDENCE_COUNT):
+            if best_dist < 0.52:
+                logger.info(
+                    f"[{start:.1f}-{end:.1f}s] gated new cluster minting (dur={duration:.1f}s, dist={best_dist:.3f}) "
+                    f"-> force attributed to nearest cluster {best_label}"
+                )
+                self._update_cluster(best_label, embedding)
+                self._last_assigned_label = best_label
+                self.last_segment_info = {
+                    "is_overlap": False,
+                    "candidate_labels": [best_label],
+                    "speaker_label": best_label,
+                }
+                return best_label
 
         new_label = self._new_cluster(embedding)
         logger.info(

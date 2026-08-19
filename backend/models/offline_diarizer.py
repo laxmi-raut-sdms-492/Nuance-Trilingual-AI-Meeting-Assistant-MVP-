@@ -76,8 +76,9 @@ def collapse_to_single_speaker(transcript: list[dict]) -> tuple[list[dict], dict
     updated = []
     for entry in transcript:
         row = dict(entry)
-        row["speaker_label"] = "Speaker_00"
-        row["speaker"] = row.get("speaker") if not str(row.get("speaker", "")).startswith("Speaker_") else "Speaker_00"
+        if not row.get("is_overlap"):
+            row["speaker_label"] = "Speaker_00"
+            row["speaker"] = row.get("speaker") if not str(row.get("speaker", "")).startswith("Speaker_") else "Speaker_00"
         updated.append(row)
     return updated, {"applied": True, "k": 1, "reason": "single_speaker_collapse"}
 
@@ -464,12 +465,13 @@ def apply_assignment_to_transcript(
     label_map = _labels_by_first_appearance(assignment)
     updated = []
     for entry, cluster_id in zip(transcript, assignment):
-        new_label = label_map[int(cluster_id)]
         row = dict(entry)
-        row["speaker_label"] = new_label
-        row["speaker"] = new_label
-        row["identified_as"] = UNKNOWN
-        row["confidence"] = 0.0
+        if not row.get("is_overlap"):
+            new_label = label_map[int(cluster_id)]
+            row["speaker_label"] = new_label
+            row["speaker"] = new_label
+            row["identified_as"] = UNKNOWN
+            row["confidence"] = 0.0
         updated.append(row)
     return updated
 

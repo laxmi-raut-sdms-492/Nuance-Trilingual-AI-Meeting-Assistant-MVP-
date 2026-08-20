@@ -316,6 +316,17 @@ def rename_speaker(
     return meeting
 
 
+@router.delete("/meetings/{meeting_id}/speakers/{speaker_label}")
+def delete_speaker_from_meeting(meeting_id: str, speaker_label: str):
+    """
+    Remove or reset a speaker label from a meeting's transcript lines and side panel stats.
+    """
+    meeting = store.delete_speaker_from_meeting(meeting_id, speaker_label)
+    if meeting is None:
+        raise HTTPException(404, "Meeting not found.")
+    return meeting
+
+
 @router.post("/meetings/{meeting_id}/speakers/{speaker_label}/enroll")
 def enroll_speaker_from_meeting(
     meeting_id: str,

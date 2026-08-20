@@ -1292,7 +1292,7 @@ export default function MeetingDetails() {
               return (
                 <div className="flex flex-col gap-4">
                   {cleanStats.map((s) => (
-                    <div key={s.name} className="flex items-center gap-3">
+                    <div key={s.name} className="group flex items-center gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between font-meta-data text-meta-data">
                           <span className="text-text-primary truncate">{s.name}</span>
@@ -1308,6 +1308,23 @@ export default function MeetingDetails() {
                       <span className="font-meta-data text-meta-data text-text-faint w-9 text-right">
                         {s.pct}%
                       </span>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (window.confirm(`Delete ${s.name} from this meeting?`)) {
+                            try {
+                              const updated = await api.deleteMeetingSpeaker(meeting.id, s.name)
+                              setMeeting(updated.data || updated)
+                            } catch (err) {
+                              console.error('Delete speaker failed:', err)
+                            }
+                          }
+                        }}
+                        className="opacity-0 group-hover:opacity-100 hover:text-red-400 text-text-faint transition-opacity p-1 flex items-center justify-center rounded"
+                        title={`Delete ${s.name} from this meeting`}
+                      >
+                        <span className="material-symbols-outlined text-sm">delete</span>
+                      </button>
                     </div>
                   ))}
                 </div>

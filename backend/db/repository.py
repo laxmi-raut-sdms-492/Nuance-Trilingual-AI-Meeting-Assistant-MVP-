@@ -514,6 +514,51 @@ def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None
         return _to_dict(meeting)
 
 
+def delete_speaker_from_meeting(meeting_id: str, speaker_label: str) -> dict | None:
+    """
+    Remove/reset a speaker from a specific meeting's transcript lines and speaker stats.
+    """
+    clean_target = speaker_label.strip().lower()
+    with session_scope() as session:
+        meeting = session.get(Meeting, meeting_id)
+        if meeting is None:
+            return None
+
+        for line in meeting.transcript_lines:
+            if (line.speaker and line.speaker.strip().lower() == clean_target) or \
+               (line.speaker_label and line.speaker_label.strip().lower() == clean_target):
+                fallback = line.speaker_label if (line.speaker_label and line.speaker_label.strip().lower() != clean_target) else "Unknown"
+                line.speaker = fallback
+
+        session.flush()
+        session.expire(meeting)
+        meeting = session.get(Meeting, meeting_id)
+        _refresh_speaker_stats_from_transcript(session, meeting)
+        session.expire(meeting)
+        meeting = session.get(Meeting, meeting_id)
+        return _to_dict(meeting)
+
+
+def delete_speaker_globally(name: str) -> None:
+    """
+    Reset/revert a speaker name across all stored meetings in the database.
+    """
+    clean_target = name.strip().lower()
+    with session_scope() as session:
+        meetings = session.query(Meeting).all()
+        for meeting in meetings:
+            modified = False
+            for line in meeting.transcript_lines:
+                if line.speaker and line.speaker.strip().lower() == clean_target:
+                    fallback = line.speaker_label if (line.speaker_label and line.speaker_label.strip().lower() != clean_target) else "Unknown"
+                    line.speaker = fallback
+                    modified = True
+            if modified:
+                session.flush()
+                session.expire(meeting)
+                _refresh_speaker_stats_from_transcript(session, meeting)
+
+
 def _format_talk_time(seconds: float) -> str:
     total = int(round(seconds))
     minutes, secs = divmod(total, 60)

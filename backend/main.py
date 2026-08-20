@@ -146,6 +146,8 @@ def list_speakers():
 @app.delete("/speakers/{name}")
 def delete_speaker(name: str):
     identifier.remove(name)
+    from db import repository as store
+    store.delete_speaker_globally(name)
     return {"status": "removed", "name": name}
 
 

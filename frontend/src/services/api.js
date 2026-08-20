@@ -55,6 +55,9 @@ export const meetingsApi = {
     )
   },
 
+  deleteMeetingSpeaker: (meetingId, speakerLabel) =>
+    api.delete(`/meetings/${meetingId}/speakers/${encodeURIComponent(speakerLabel)}`),
+
   // Enroll a voice profile from meeting audio without renaming (or after a
   // prior rename). Uses the same ECAPA + speakers table path as /enroll.
   enrollSpeaker: (meetingId, speakerLabel, name, { overwrite = false } = {}) => {

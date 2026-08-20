@@ -118,18 +118,34 @@ function getSpeakerColor(name, speakerStats = []) {
   return SPEAKER_PALETTE[Math.abs(hash) % SPEAKER_PALETTE.length]
 }
 
+function resolveSpeakerDisplayName(rawName, speakerStats = []) {
+  if (!rawName) return 'Speaker_00'
+  const clean = String(rawName).trim()
+
+  const statMatch = speakerStats?.find(
+    (s) => (s.speaker_label && s.speaker_label.toLowerCase() === clean.toLowerCase()) ||
+           (s.name && s.name.toLowerCase() === clean.toLowerCase())
+  )
+  if (statMatch && statMatch.name) return statMatch.name
+
+  return clean
+}
+
 function deriveAttributedSpans(t, speakerStats) {
   if (t.attributed_spans && Array.isArray(t.attributed_spans) && t.attributed_spans.length > 0) {
-    return t.attributed_spans.map((s) => ({
-      speaker: s.speaker,
-      text: s.text,
-      color: getSpeakerColor(s.speaker, speakerStats),
-    }))
+    return t.attributed_spans.map((s) => {
+      const resolved = resolveSpeakerDisplayName(s.speaker, speakerStats)
+      return {
+        speaker: resolved,
+        text: s.text,
+        color: getSpeakerColor(resolved, speakerStats),
+      }
+    })
   }
 
   if (!t.is_overlap) return null
 
-  const uniqueSpks = getUniqueSpeakers(t.speaker, t.candidate_speakers)
+  const uniqueSpks = getUniqueSpeakers(t.speaker, t.candidate_speakers, speakerStats)
   if (uniqueSpks.length <= 1) return null
 
   const fullText = (t.cleaned_text || t.text || '').trim()
@@ -139,16 +155,17 @@ function deriveAttributedSpans(t, speakerStats) {
   const targetClauses = clauses.length > 0 ? clauses : [fullText]
 
   return targetClauses.map((clause, i) => {
-    const spk = uniqueSpks[i % uniqueSpks.length]
+    const rawSpk = uniqueSpks[i % uniqueSpks.length]
+    const resolved = resolveSpeakerDisplayName(rawSpk, speakerStats)
     return {
-      speaker: spk,
+      speaker: resolved,
       text: clause,
-      color: getSpeakerColor(spk, speakerStats),
+      color: getSpeakerColor(resolved, speakerStats),
     }
   })
 }
 
-function getUniqueSpeakers(speakerStr, candidateSpeakers) {
+function getUniqueSpeakers(speakerStr, candidateSpeakers, speakerStats = []) {
   let rawList = []
   if (Array.isArray(candidateSpeakers) && candidateSpeakers.length > 0) {
     rawList = candidateSpeakers
@@ -159,14 +176,14 @@ function getUniqueSpeakers(speakerStr, candidateSpeakers) {
   const unique = []
   const seen = new Set()
   for (const item of rawList) {
-    const clean = String(item || '').trim()
-    const lower = clean.toLowerCase()
-    if (clean && !seen.has(lower)) {
+    const resolved = resolveSpeakerDisplayName(item, speakerStats)
+    const lower = resolved.toLowerCase()
+    if (resolved && !seen.has(lower)) {
       seen.add(lower)
-      unique.push(clean)
+      unique.push(resolved)
     }
   }
-  return unique.length > 0 ? unique : [speakerStr || 'Speaker_00']
+  return unique.length > 0 ? unique : [resolveSpeakerDisplayName(speakerStr, speakerStats)]
 }
 
 function MultiSpeakerLabel({ meetingId, speakerStr, candidateSpeakers, fallbackColor, onRenamed, enrolledSpeakers, speakerStats }) {

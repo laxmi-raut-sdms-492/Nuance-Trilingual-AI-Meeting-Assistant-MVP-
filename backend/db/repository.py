@@ -516,7 +516,7 @@ def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None
 
 def delete_speaker_from_meeting(meeting_id: str, speaker_label: str) -> dict | None:
     """
-    Remove/reset a speaker from a specific meeting's transcript lines and speaker stats.
+    Completely remove a speaker and their lines from a meeting's transcript and speaker stats.
     """
     clean_target = speaker_label.strip().lower()
     with session_scope() as session:
@@ -524,11 +524,17 @@ def delete_speaker_from_meeting(meeting_id: str, speaker_label: str) -> dict | N
         if meeting is None:
             return None
 
-        for line in meeting.transcript_lines:
-            if (line.speaker and line.speaker.strip().lower() == clean_target) or \
-               (line.speaker_label and line.speaker_label.strip().lower() == clean_target):
-                fallback = line.speaker_label if (line.speaker_label and line.speaker_label.strip().lower() != clean_target) else "Unknown"
-                line.speaker = fallback
+        lines_to_delete = [
+            line for line in meeting.transcript_lines
+            if (line.speaker and line.speaker.strip().lower() == clean_target) or
+               (line.speaker_label and line.speaker_label.strip().lower() == clean_target)
+        ]
+        for line in lines_to_delete:
+            session.delete(line)
+
+        for stat in list(meeting.speaker_stats):
+            if stat.name and stat.name.strip().lower() == clean_target:
+                session.delete(stat)
 
         session.flush()
         session.expire(meeting)
@@ -541,7 +547,7 @@ def delete_speaker_from_meeting(meeting_id: str, speaker_label: str) -> dict | N
 
 def delete_speaker_globally(name: str) -> None:
     """
-    Reset/revert a speaker name across all stored meetings in the database.
+    Reset/revert a speaker name across all stored meetings in the database when un-enrolled.
     """
     clean_target = name.strip().lower()
     with session_scope() as session:
@@ -550,7 +556,7 @@ def delete_speaker_globally(name: str) -> None:
             modified = False
             for line in meeting.transcript_lines:
                 if line.speaker and line.speaker.strip().lower() == clean_target:
-                    fallback = line.speaker_label if (line.speaker_label and line.speaker_label.strip().lower() != clean_target) else "Unknown"
+                    fallback = line.speaker_label if (line.speaker_label and line.speaker_label.strip().lower() != clean_target) else "Speaker_00"
                     line.speaker = fallback
                     modified = True
             if modified:

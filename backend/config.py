@@ -368,8 +368,8 @@ OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "0")
 # any context this machine can afford. CPU prompt ingestion is the bottleneck
 # (Whisper holds the 4 GB of VRAM), so windows are summarized separately and
 # then merged.
-SUMMARY_WINDOW_SECONDS = 600.0
-SUMMARY_TIMEOUT_SECONDS = int(os.getenv("SUMMARY_TIMEOUT_SECONDS", "15"))
+SUMMARY_WINDOW_SECONDS = float(os.getenv("SUMMARY_WINDOW_SECONDS", "240.0"))
+SUMMARY_TIMEOUT_SECONDS = int(os.getenv("SUMMARY_TIMEOUT_SECONDS", "180"))
 
 # Fuzzy-match floor for "does this quote actually appear in the transcript".
 # Not 1.0: a model that repairs a typo or drops a filler word is still citing a

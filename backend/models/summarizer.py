@@ -172,38 +172,31 @@ def _normalize(text: str) -> str:
 
 def _shorten_action_title(text: str, max_words: int = 10) -> str:
     """
-    Trims long rambling transcript quotes into short, concise action titles (max 10 words).
-    Strips conversational fillers ('uh', 'in fact', 'i mean', 'you know', 'well', 'oh', 'really').
+    Trims rambling transcript quotes into clean, concise action titles (max 10 words).
+    Strips conversational fillers in English, Hindi, and Marathi.
     """
     if not text:
         return ""
 
     cleaned = str(text).strip()
 
-    # Repeatedly strip conversational prefixes / fillers
     filler_pattern = re.compile(
-        r"^(?:uh|um|oh|well|so|yeah|okay|right|really|in fact|i mean|like|you know|look|listen)[,\s\.-]+",
+        r"^(?:uh|um|oh|well|so|yeah|okay|right|really|in fact|i mean|like|you know|look|listen|पण|आणि|नाही|म्हणजे|असं|ते|ह्या|हे|पण त्याच्यात ते|differently and|Aani|Only one of them|first|by default)[,\s\.-]+",
         flags=re.IGNORECASE,
     )
     while filler_pattern.search(cleaned):
         cleaned = filler_pattern.sub("", cleaned).strip()
 
-    # Split into sentences, filter out short 1-2 word filler fragments ("really", "oh really", "okay so")
+    cleaned = re.sub(r"^[^a-zA-Z\u0900-\u097F]+", "", cleaned)
+
     raw_sentences = [s.strip() for s in re.split(r"[.!?]+", cleaned) if s.strip()]
     valid_sentences = [s for s in raw_sentences if len(s.split()) >= 3]
 
     if valid_sentences:
-        # Prefer a sentence containing action cues/verbs/targets, else the first valid sentence
-        action_sentence = valid_sentences[0]
-        for s in valid_sentences:
-            if any(w in s.lower() for w in ("going to", "will", "need to", "speak to", "get back", "check", "discuss", "call", "meet", "tomorrow", "today", "schedule", "work", "assume", "off", "organiz")):
-                action_sentence = s
-                break
-        cleaned = action_sentence
+        cleaned = valid_sentences[0]
     elif raw_sentences:
         cleaned = raw_sentences[0]
 
-    # Limit to max_words
     words = cleaned.split()
     if len(words) > max_words:
         cleaned = " ".join(words[:max_words]).rstrip(".,;:-") + "..."
@@ -286,17 +279,12 @@ def _windows(transcript: list[dict], seconds: float) -> list[list[dict]]:
 # nothing was being dropped by the citation check, because nothing was being
 # proposed. If this is edited, re-measure both meetings; the failure mode is
 # silent, and an empty panel looks identical to an honest one.
-_WINDOW_PROMPT = """You are summarizing part of a meeting transcript. Work ONLY from the lines given.
+_WINDOW_PROMPT = """You are an executive assistant summarizing a meeting transcript. Work ONLY from the transcript lines given.
 
-What counts as an action item: any point where someone commits to doing something, is asked to do something, or a task is named as needing to be done. It is still an action item if no date and no owner were stated.
+What counts as an action item: any point where someone commits to doing something, is asked to do something, or a task is named as needing to be done.
 What counts as a decision: any point where a choice is settled, agreed, approved, or stated as the plan going forward.
 
 Rules:
-- Every action item and every decision MUST quote, word for word, the transcript line it came from. Copy that line exactly.
-- Report what is there. If this part genuinely contains none, return an empty list — but do not withhold a real item because it lacks an owner or a date.
-- Do not invent anything that was not said out loud. Do not guess a due date; leave it null unless a date was spoken.
-- The transcript may mix English, Hindi and Marathi. Write the summary in the same language as most of this part (English, Hindi, or Marathi). Keep quotes in their original language and script.
-
 Return ONLY valid JSON, no prose around it, in this exact shape:
 {{
   "summary": "Short 1-2 sentence high-level summary (max 30 words)",

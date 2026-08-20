@@ -33,9 +33,9 @@ export default function App() {
                   <Route path="/analytics/insights" element={<AnalyticsPage tab="insights" />} />
 
                   <Route path="/settings/members" element={<Settings tab="members" />} />
+                  <Route path="/members" element={<Settings tab="members" />} />
                   <Route path="/settings/speakers" element={<Settings tab="speakers" />} />
                   <Route path="/settings/preferences" element={<Settings tab="preferences" />} />
-                  <Route path="/settings/integrations" element={<Settings tab="integrations" />} />
                   <Route path="/profile" element={<Settings tab="profile" />} />
 
                   <Route path="*" element={<NotFound />} />

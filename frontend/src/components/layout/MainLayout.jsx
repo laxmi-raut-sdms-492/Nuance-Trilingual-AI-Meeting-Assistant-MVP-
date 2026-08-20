@@ -17,7 +17,7 @@ export default function MainLayout() {
 
       <main className="flex-1 ml-0 md:ml-sidebar-width flex flex-col min-h-screen relative pb-20 md:pb-0">
         <Navbar />
-        <div className="p-gutter flex flex-col gap-8 max-w-[1200px] w-full mx-auto">
+        <div className="p-gutter flex flex-col gap-8 max-w-[1400px] w-full mx-auto">
           <Outlet />
         </div>
       </main>

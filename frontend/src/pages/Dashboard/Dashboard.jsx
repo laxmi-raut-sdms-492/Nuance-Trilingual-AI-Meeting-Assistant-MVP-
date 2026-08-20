@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import Icon from '../../components/common/Icon.jsx'
 import EmptyState from '../../components/common/EmptyState.jsx'
@@ -65,6 +65,10 @@ export default function Dashboard() {
   const { meetings } = useMeetings()
   const { members } = useMembers()
   const { profile } = useUser()
+  const [dateRange, setDateRange] = useState('7days')
+  const [customDate, setCustomDate] = useState('')
+  const [activeStatusFilter, setActiveStatusFilter] = useState('all')
+  const [showMembersModal, setShowMembersModal] = useState(false)
 
   const stats = useMemo(
     () => ({
@@ -75,26 +79,53 @@ export default function Dashboard() {
     [meetings]
   )
 
+  const filteredMeetingsForChart = useMemo(() => {
+    const now = new Date()
+    return meetings.filter((m) => {
+      if (!m.uploadedAtISO) return true
+      const mDate = new Date(m.uploadedAtISO)
+      if (dateRange === '7days') {
+        const diffDays = (now - mDate) / (1000 * 60 * 60 * 24)
+        return diffDays <= 7
+      }
+      if (dateRange === '30days') {
+        const diffDays = (now - mDate) / (1000 * 60 * 60 * 24)
+        return diffDays <= 30
+      }
+      if (dateRange === 'thisMonth') {
+        return mDate.getMonth() === now.getMonth() && mDate.getFullYear() === now.getFullYear()
+      }
+      if (dateRange === 'custom' && customDate) {
+        const targetStr = new Date(customDate).toDateString()
+        return mDate.toDateString() === targetStr
+      }
+      return true
+    })
+  }, [meetings, dateRange, customDate])
+
   const weeklyData = useMemo(() => {
     const days = []
     const today = new Date()
+    const todayStr = today.toDateString()
     for (let i = 6; i >= 0; i--) {
       const d = new Date(today)
       d.setDate(today.getDate() - i)
+      const key = d.toDateString()
       days.push({
-        key: d.toDateString(),
+        key,
         day: d.toLocaleDateString(undefined, { weekday: 'short' }),
+        isToday: key === todayStr,
         meetings: 0,
       })
     }
-    meetings.forEach((m) => {
+    filteredMeetingsForChart.forEach((m) => {
       if (!m.uploadedAtISO) return
       const key = new Date(m.uploadedAtISO).toDateString()
       const bucket = days.find((d) => d.key === key)
       if (bucket) bucket.meetings += 1
     })
-    return days.map(({ day, meetings: count }) => ({ day, meetings: count }))
-  }, [meetings])
+    return days.map(({ day, isToday, meetings: count }) => ({ day, isToday, meetings: count }))
+  }, [filteredMeetingsForChart])
 
   // Aggregated over seconds, not percentages. Summing each meeting's
   // percentages would weight a two-minute standup the same as a two-hour
@@ -129,20 +160,22 @@ export default function Dashboard() {
       .slice(0, 10)
   }, [meetings])
 
-  const recentMeetings = useMemo(
-    () =>
-      [...meetings]
-        .sort((a, b) => new Date(b.uploadedAtISO) - new Date(a.uploadedAtISO))
-        .slice(0, 5),
-    [meetings]
-  )
+  const filteredRecentMeetings = useMemo(() => {
+    let list = meetings
+    if (activeStatusFilter !== 'all') {
+      list = meetings.filter((m) => m.status?.toLowerCase() === activeStatusFilter.toLowerCase())
+    }
+    return [...list]
+      .sort((a, b) => new Date(b.uploadedAtISO) - new Date(a.uploadedAtISO))
+      .slice(0, 5)
+  }, [meetings, activeStatusFilter])
 
   return (
-    <>
+    <div className="flex flex-col gap-5">
       {/* Page header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <p className="font-meta-data text-meta-data text-text-muted mb-1">
+          <p className="font-meta-data text-meta-data text-text-muted mb-0.5">
             {new Date().toLocaleDateString(undefined, {
               weekday: 'long',
               year: 'numeric',
@@ -157,28 +190,93 @@ export default function Dashboard() {
         <button
           type="button"
           onClick={() => navigate('/upload')}
-          className="bg-cta hover:bg-primary-container text-on-cta font-label-sm text-label-sm py-3 px-6 rounded-lg flex items-center gap-2 transition-all hover:scale-105 shadow-[0_0_15px_rgba(252,81,0,0.3)]"
+          className="bg-cta hover:bg-primary-container text-on-cta font-label-sm text-label-sm py-2.5 px-5 rounded-lg flex items-center gap-2 transition-all hover:scale-105 shadow-[0_0_15px_rgba(252,81,0,0.3)] shrink-0"
         >
           <Icon name="videocam" />
           Create Meeting
         </button>
       </div>
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard label="Total Meetings" value={stats.total} icon="folder" tint="primary" />
-        <StatCard label="Completed" value={stats.completed} icon="check_circle" tint="green" />
-        <StatCard label="Processing" value={stats.processing} icon="sync" tint="amber" />
-        <StatCard label="Team Members" value={members.length} icon="groups" tint="primary" />
+      {/* Quick Stats Grid - Full Width Top Row */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 w-full">
+        <StatCard
+          label="Total Meetings"
+          value={stats.total}
+          icon="folder"
+          tint="primary"
+        />
+        <StatCard
+          label="Completed"
+          value={stats.completed}
+          icon="check_circle"
+          tint="green"
+        />
+        <StatCard
+          label="Processing"
+          value={stats.processing}
+          icon="sync"
+          tint="amber"
+        />
+        <StatCard
+          label="Team Members"
+          value={members.length}
+          icon="groups"
+          tint="primary"
+        />
       </div>
 
-      {/* Bento row 1 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 h-auto lg:h-[300px]">
-        <div className="bg-surface border border-border rounded-xl p-6 lg:col-span-2 flex flex-col">
-          <div className="flex justify-between items-center mb-6">
+      {/* Side-by-Side Grid Layout: Meeting Activity Chart (Left) + Recent Meetings (Right) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start w-full">
+        {/* Meeting Activity Chart */}
+        <div className="bg-surface border border-border rounded-xl p-5 flex flex-col min-h-[300px]">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2 pb-2 border-b border-border/40">
             <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-              Meeting Activity (Last 7 Days)
+              Meeting Activity
             </h3>
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-1.5 bg-surface-raised border border-border px-2.5 py-1 rounded-lg">
+                <Icon name="filter_alt" className="text-text-muted" size={14} />
+                <select
+                  value={customDate ? 'custom' : dateRange}
+                  onChange={(e) => {
+                    setDateRange(e.target.value)
+                    setCustomDate('')
+                  }}
+                  className="bg-transparent font-meta-data text-meta-data text-text-primary focus:outline-none text-xs cursor-pointer"
+                >
+                  <option value="7days">Last 7 Days</option>
+                  <option value="30days">Last 30 Days</option>
+                  <option value="thisMonth">This Month</option>
+                  <option value="allTime">All Time</option>
+                </select>
+              </div>
+
+              <div className="relative flex items-center">
+                <input
+                  type="date"
+                  max={new Date().toISOString().split('T')[0]}
+                  value={customDate}
+                  onChange={(e) => {
+                    setCustomDate(e.target.value)
+                    if (e.target.value) setDateRange('custom')
+                  }}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full z-10"
+                />
+                <div className="input-base px-2.5 py-1 rounded-lg border border-border font-meta-data text-meta-data bg-surface-raised text-text-primary flex items-center gap-2 text-xs pointer-events-none">
+                  <span className={customDate ? 'text-text-primary font-medium' : 'text-text-muted'}>
+                    {customDate ? (
+                      (() => {
+                        const parts = customDate.split('-')
+                        return parts.length === 3 ? `${parts[2]}/${parts[1]}/${parts[0]}` : customDate
+                      })()
+                    ) : (
+                      'dd/mm/yyyy'
+                    )}
+                  </span>
+                  <Icon name="calendar_today" size={14} className="text-text-muted" />
+                </div>
+              </div>
+            </div>
           </div>
           {meetings.length > 0 ? (
             <WeeklyChart data={weeklyData} />
@@ -191,81 +289,102 @@ export default function Dashboard() {
           )}
         </div>
 
-        <div className="bg-surface border border-border rounded-xl p-6 flex flex-col items-center justify-center relative overflow-hidden">
-          <h3 className="font-sidebar-header text-sidebar-header text-text-primary absolute top-6 left-6">
-            Talk-Time Share
-          </h3>
-          {speakerPieData.length > 0 ? (
-            <div className="mt-8">
-              <SpeakerPie data={speakerPieData} />
+        {/* Recent Meetings */}
+        <div className="bg-surface border border-border rounded-xl p-5 flex flex-col min-h-[300px]">
+          <div className="flex justify-between items-center mb-3 flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
+                {activeStatusFilter === 'all' ? 'Recent Meetings' : `Recent Meetings (${activeStatusFilter})`}
+              </h3>
+              {activeStatusFilter !== 'all' && (
+                <button
+                  type="button"
+                  onClick={() => setActiveStatusFilter('all')}
+                  className="text-xs text-primary hover:underline font-meta-data font-semibold"
+                >
+                  (Show all)
+                </button>
+              )}
             </div>
-          ) : (
-            <EmptyState
-              icon="donut_large"
-              title="No speaker data yet"
-              subtitle="Breakdowns appear once a meeting finishes processing."
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Bento row 2 */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="bg-surface border border-border rounded-xl p-6 lg:col-span-2">
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-              Recent Meetings
-            </h3>
             <Link
-              to="/meetings"
+              to={activeStatusFilter === 'all' ? '/meetings' : `/meetings?status=${activeStatusFilter}`}
               className="font-label-sm text-label-sm text-primary hover:text-primary-container transition-colors"
             >
-              View all
+              View all →
             </Link>
           </div>
-          {recentMeetings.length === 0 ? (
+          {filteredRecentMeetings.length === 0 ? (
             <EmptyState
               icon="event_note"
-              title="No meetings uploaded yet"
-              subtitle="Upload an audio or video recording to get started."
+              title={activeStatusFilter === 'all' ? 'No meetings uploaded yet' : `No ${activeStatusFilter} meetings found`}
+              subtitle={activeStatusFilter === 'all' ? 'Upload an audio or video recording to get started.' : 'Try selecting another tab or clear filter.'}
             />
           ) : (
             <div className="flex flex-col gap-2">
-              {recentMeetings.map((m) => (
+              {filteredRecentMeetings.map((m) => (
                 <MeetingRow key={m.id} meeting={m} />
               ))}
             </div>
           )}
         </div>
-
-        <div className="bg-surface border border-border rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-6">
-            <Icon name="sell" className="text-primary" />
-            <h3 className="font-sidebar-header text-sidebar-header text-text-primary">
-              Top Keywords
-            </h3>
-          </div>
-          {topKeywords.length > 0 ? (
-            <div className="flex flex-wrap gap-2">
-              {topKeywords.map((k) => (
-                <span
-                  key={k.word}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
-                >
-                  {k.word}
-                  <span className="text-text-faint">{k.count}</span>
-                </span>
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              icon="sell"
-              title="No keywords yet"
-              subtitle="Keywords appear once a meeting has been summarized. They are counted from the transcript, so an empty panel means nothing has been processed yet."
-            />
-          )}
-        </div>
       </div>
-    </>
+
+      {/* Team Members Modal */}
+      {showMembersModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fade-in">
+          <div className="bg-surface border border-border rounded-xl p-6 w-full max-w-md shadow-2xl flex flex-col gap-4 relative">
+            <div className="flex items-center justify-between border-b border-border pb-3">
+              <div className="flex items-center gap-2">
+                <Icon name="groups" className="text-primary" size={22} />
+                <h3 className="font-sidebar-header text-sidebar-header text-text-primary text-base font-bold">
+                  Team Members
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowMembersModal(false)}
+                className="p-1 rounded text-text-muted hover:text-text-primary transition-colors focus:outline-none"
+              >
+                <Icon name="close" size={20} />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-2.5 max-h-[300px] overflow-y-auto pr-1">
+              {members.map((m) => {
+                const initials = m.name ? m.name.slice(0, 2).toUpperCase() : 'AN'
+                return (
+                  <div
+                    key={m.id}
+                    className="flex items-center gap-3 p-3 rounded-lg border border-border/60 bg-surface-raised"
+                  >
+                    <div className="w-9 h-9 rounded-full bg-primary text-white font-bold text-xs flex items-center justify-center shrink-0">
+                      {initials}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-sidebar-header text-xs font-bold text-text-primary truncate">
+                        {m.name}
+                      </h4>
+                      <p className="font-meta-data text-xs text-text-muted truncate">
+                        {m.email}
+                      </p>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowMembersModal(false)}
+                className="px-4 py-1.5 text-xs bg-primary text-white font-medium rounded-lg hover:bg-primary/90 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

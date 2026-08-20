@@ -37,22 +37,20 @@ export default function WeeklyChart({ data }) {
           </div>
         )}
 
-        {data.map((d) => {
-          const isPeak = max > 0 && d.meetings === max
+        {data.map((d, index) => {
+          const isToday = d.isToday !== undefined ? d.isToday : index === data.length - 1
           const empty = d.meetings === 0
-          // Non-zero bars never fall below 14% so a single meeting still reads
-          // as a bar; zero stays zero and is carried by the channel instead.
           const height = max > 0 && !empty ? Math.max((d.meetings / max) * 100, 14) : 0
 
           return (
-            <div key={d.day} className="flex flex-col items-center gap-2 group flex-1 min-w-0">
+            <div key={d.day} className="flex flex-col items-center gap-2 group flex-1 min-w-0 cursor-pointer">
               <span
                 className={`font-meta-data text-meta-data tabular-nums transition-colors ${
                   empty
-                    ? 'text-text-faint'
-                    : isPeak
-                      ? 'text-primary font-medium'
-                      : 'text-text-muted'
+                    ? 'text-text-faint group-hover:text-text-muted'
+                    : isToday
+                      ? 'text-primary font-bold'
+                      : 'text-text-muted group-hover:text-primary font-medium'
                 }`}
               >
                 {d.meetings}
@@ -66,13 +64,19 @@ export default function WeeklyChart({ data }) {
               >
                 {empty ? (
                   // Flat cap on the baseline — reads as a deliberate zero.
-                  <div className="w-full h-[3px] bg-border" />
+                  <div
+                    className={`w-full h-[3px] transition-all ${
+                      isToday
+                        ? 'bg-primary'
+                        : 'bg-border group-hover:bg-primary/70'
+                    }`}
+                  />
                 ) : (
                   <div
-                    className={`w-full rounded-t-sm transition-all ${
-                      isPeak
-                        ? 'bg-cta shadow-[0_0_10px_rgba(252,81,0,0.25)]'
-                        : 'bg-primary-container/50 group-hover:bg-primary-container'
+                    className={`w-full rounded-t-sm transition-all duration-200 ${
+                      isToday
+                        ? 'bg-primary shadow-[0_0_12px_rgba(252,81,0,0.5)]'
+                        : 'bg-primary/35 opacity-80 group-hover:bg-primary group-hover:opacity-100 group-hover:shadow-[0_0_10px_rgba(252,81,0,0.4)]'
                     }`}
                     style={{ height: `${height}%` }}
                   />
@@ -80,8 +84,8 @@ export default function WeeklyChart({ data }) {
               </div>
 
               <span
-                className={`font-meta-data text-meta-data truncate ${
-                  isPeak ? 'text-text-primary font-medium' : 'text-text-muted'
+                className={`font-meta-data text-meta-data truncate transition-colors ${
+                  isToday ? 'text-primary font-bold' : 'text-text-muted group-hover:text-text-primary'
                 }`}
               >
                 {d.day}

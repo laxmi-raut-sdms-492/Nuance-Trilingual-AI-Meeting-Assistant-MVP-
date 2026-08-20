@@ -43,15 +43,21 @@ import re
 # that differ between the two languages regardless of topic.
 _MR_DEVANAGARI = {
     "आहे", "आहेस", "आहात", "आहोत", "आहेत",  # copula "to be" (all persons)
-    "नाही",  # negation "is not"
-    "मी", "माझा", "माझी", "माझे", "माझं", "तुझा", "तुझी", "आम्ही", "आपण", "तू",
-    "त्याला", "तिला", "त्यांना",
-    "मला", "तुला", "आम्हाला",
-    "काय", "कसं", "कशी", "कोण", "कुठे", "कधी",
-    "आणि", "पण", "किंवा",
-    "करतो", "करते", "करतोय", "करतेय", "करत", "बोलतो", "बोलते", "बोलतोय",
-    "जातो", "जाते", "येतो", "येते",
-    "होता", "होती", "होते",
+    "होता", "होती", "होते", "होतं",
+    "झालं", "झाला", "झाली", "झाले",
+    "नव्हतं", "नव्हता", "नव्हती", "नव्हते",
+    "नाही", "नाहीत", "नका",
+    "मी", "माझा", "माझी", "माझे", "माझं", "तुझा", "तुझी", "तुझं", "आम्ही", "आपण", "तू",
+    "त्याला", "तिला", "त्यांना", "आपल्याला", "तुम्हाला", "आम्हाला", "मला", "तुला",
+    "त्याचं", "तिचं", "तुमचं", "यांना", "यांचं",
+    "काय", "कसं", "कशी", "कशा", "कोण", "कुठे", "कधी", "इकडे", "तिकडे", "इथे", "तिथे", "हवं", "पाहिजे",
+    "हे", "ते", "हा", "ही", "जो", "जी", "जे", "त्या", "या",
+    "आणि", "पण", "किंवा", "नाहीतर", "तर", "मग", "म्हणून", "कारण", "एकदा", "दोनदा", "जरी",
+    "वरती", "वर", "खाली", "पुढे", "मागे", "मध्ये", "सोबत", "सकाळी", "दुपारी", "संध्याकाळी", "आज", "उद्या", "काल",
+    "करतो", "करते", "करतोय", "करतेय", "करत", "करू", "बोलतो", "बोलते", "बोलतोय", "बोलू",
+    "जातो", "जाते", "जाऊ", "येतो", "येते", "येऊ", "चालत", "चाललं", "चालला", "चालू", "चाल", "बघू", "ऐका",
+    "दिलं", "दिला", "दिली", "दिले", "दिलात", "घेतलं", "घेतला", "घेतली", "घेतले",
+    "काढले", "काढलं", "काढला", "बघितलं", "बघितला", "बघितले", "सांगितलं", "सांगितला", "सांगितले",
 }
 
 _HI_DEVANAGARI = {
@@ -67,20 +73,17 @@ _HI_DEVANAGARI = {
     "रहा", "रही", "रहे", "हूँ", "हूं",
 }
 
-# Romanized (Latin-script) equivalents of the same closed-class words, for
-# code-switched speech that Whisper transcribes phonetically instead of in
-# Devanagari (e.g. "Me Saloni ahe", "Majha nav Saloni ahe"). Matched as whole
-# words, case-insensitive, so this does not fire on substrings inside
-# unrelated English words.
+# Romanized (Latin-script) equivalents of the same closed-class words
 _MR_ROMAN = {
     "ahe", "aahe", "ahes", "aahet", "nahi", "nahin",
     "mi", "majha", "majhi", "maze", "majhe", "tuza", "tuzi", "amhi", "aapan",
-    "mala", "tula", "amhala", "tyala", "tila",
+    "mala", "tula", "amhala", "tyala", "tila", "aplyala", "tumcha", "tumchi", "tumch",
     "kay", "kasa", "kashi", "kon", "kuthe", "kadhi",
-    "ani", "pan",
-    "karto", "karte", "kartoy", "kartey", "bolto", "bolte",
-    "jato", "jate", "yeto", "yete", "hota", "hoti",
-    "nav", "naav",
+    "ani", "pan", "varti", "var", "khali", "pudhe", "mage", "madhye",
+    "karto", "karte", "kartoy", "kartey", "bolto", "bolte", "chalt", "chaltay", "chalal",
+    "jato", "jate", "yeto", "yete", "hota", "hoti", "hotam", "zala", "zali", "zale",
+    "dil", "dilam", "dila", "dili", "dile", "ghetla", "kadhle", "kadhla", "baghitla", "sangitla",
+    "nav", "naav", "nahitar", "tar", "mag", "mhanun", "karan", "ekda", "sakali",
 }
 
 _HI_ROMAN = {

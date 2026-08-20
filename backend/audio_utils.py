@@ -39,7 +39,8 @@ def rms(audio: np.ndarray) -> float:
     """Root-mean-square amplitude — a cheap stand-in for 'is there speech here'."""
     if len(audio) == 0:
         return 0.0
-    return float(np.sqrt(np.mean(np.square(audio))))
+    arr = np.asarray(audio, dtype=np.float32)
+    return float(np.sqrt(np.mean(np.square(arr))))
 
 
 def load_audio_file(path: str) -> np.ndarray:

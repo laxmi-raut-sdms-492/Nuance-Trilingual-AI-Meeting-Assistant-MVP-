@@ -11,7 +11,6 @@ import { useTheme } from '../../context/ThemeContext.jsx'
 /** Ported from the design export (settings_members_prefs). */
 
 const TITLES = {
-  integrations: 'Integrations',
   preferences: 'Preferences',
   members: 'Members',
   profile: 'Profile',
@@ -22,28 +21,8 @@ const TABS = [
   { to: '/settings/members', key: 'members', label: 'Members' },
   { to: '/settings/speakers', key: 'speakers', label: 'Speakers' },
   { to: '/settings/preferences', key: 'preferences', label: 'Preferences' },
-  { to: '/settings/integrations', key: 'integrations', label: 'Integrations' },
   { to: '/profile', key: 'profile', label: 'Profile' },
 ]
-
-const INTEGRATION_APPS = [
-  { name: 'Google Calendar', icon: 'calendar_month' },
-  { name: 'Slack', icon: 'forum' },
-  { name: 'Zoom', icon: 'videocam' },
-  { name: 'Microsoft Teams', icon: 'groups' },
-]
-
-const CONNECTIONS_KEY = 'nuance:integrations'
-const NOTIFS_KEY = 'nuance:notifications'
-
-function loadJSON(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? JSON.parse(raw) : fallback
-  } catch {
-    return fallback
-  }
-}
 
 const panel = 'bg-surface border border-border rounded-xl p-6'
 const input =
@@ -76,7 +55,6 @@ export default function Settings({ tab }) {
       </div>
 
       <div className="max-w-3xl w-full">
-        {tab === 'integrations' && <IntegrationsTab />}
         {tab === 'preferences' && <PreferencesTab />}
         {tab === 'members' && <MembersTab />}
         {tab === 'profile' && <ProfileTab />}
@@ -86,87 +64,16 @@ export default function Settings({ tab }) {
   )
 }
 
-function IntegrationsTab() {
-  const [connections, setConnections] = useState(() => loadJSON(CONNECTIONS_KEY, {}))
-
-  useEffect(() => {
-    localStorage.setItem(CONNECTIONS_KEY, JSON.stringify(connections))
-  }, [connections])
+function PreferencesTab() {
+  const { dark, toggleDark } = useTheme()
 
   return (
     <div className={panel}>
-      <h3 className="font-sidebar-header text-sidebar-header text-text-primary mb-1">
-        Connected Apps
-      </h3>
-      {/* Honest about what this is: no OAuth exists, so the toggle only
-          remembers a preference in localStorage. Saying so beats implying a
-          working integration. */}
-      <div className="flex items-start gap-2 mb-6 mt-2">
-        <Icon name="info" size={18} className="text-processing shrink-0 mt-0.5" />
-        <p className="font-meta-data text-meta-data text-text-muted">
-          These toggles only save a preference in this browser. No OAuth is wired up, so nothing is
-          actually connected to Nuance yet.
-        </p>
-      </div>
-      <div className="flex flex-col gap-3">
-        {INTEGRATION_APPS.map((app) => {
-          const connected = Boolean(connections[app.name])
-          return (
-            <div
-              key={app.name}
-              className="flex items-center justify-between p-4 rounded-lg border border-border bg-surface-raised gap-3"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div className="w-9 h-9 rounded-lg bg-surface-container flex items-center justify-center text-text-muted shrink-0">
-                  <Icon name={app.icon} size={20} />
-                </div>
-                <span className="text-text-primary truncate">{app.name}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setConnections((prev) => ({ ...prev, [app.name]: !prev[app.name] }))
-                }
-                className={`px-4 py-2 rounded-lg font-label-sm text-label-sm transition-colors shrink-0 ${
-                  connected
-                    ? 'border border-border text-text-primary hover:bg-surface-container'
-                    : 'bg-cta text-on-cta hover:bg-primary-container'
-                }`}
-              >
-                {connected ? 'Disconnect' : 'Connect'}
-              </button>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function PreferencesTab() {
-  const { dark, toggleDark } = useTheme()
-  const [notifs, setNotifs] = useState(() => {
-    const raw = localStorage.getItem(NOTIFS_KEY)
-    return raw === null ? true : raw === 'true'
-  })
-
-  useEffect(() => {
-    localStorage.setItem(NOTIFS_KEY, String(notifs))
-  }, [notifs])
-
-  return (
-    <div className={`${panel} flex flex-col divide-y divide-border`}>
       <Toggle
         label="Dark Mode"
         description="Nuance is designed dark. The light palette is derived from it."
         checked={dark}
         onChange={toggleDark}
-      />
-      <Toggle
-        label="Email Notifications"
-        description="Saved in this browser only — no mail is sent, there is no notification backend."
-        checked={notifs}
-        onChange={setNotifs}
       />
     </div>
   )

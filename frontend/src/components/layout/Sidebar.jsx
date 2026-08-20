@@ -46,33 +46,35 @@ export default function Sidebar() {
   const navigate = useNavigate()
 
   return (
-    <nav className="w-sidebar-width h-screen fixed left-0 top-0 hidden md:flex flex-col bg-surface border-r border-border p-4 gap-6 z-50">
-      <div className="flex items-center gap-3 px-2 mb-4">
-        <div className="w-8 h-8 rounded bg-primary-container flex items-center justify-center text-on-primary-container">
-          <Icon name="graphic_eq" filled />
+    <nav className="w-sidebar-width fixed inset-y-0 left-0 hidden md:flex flex-col justify-between bg-surface border-r border-border p-4 z-50">
+      <div>
+        <div className="flex items-center gap-3 px-2 mb-6">
+          <div className="w-8 h-8 rounded bg-primary-container flex items-center justify-center text-on-primary-container">
+            <Icon name="graphic_eq" filled />
+          </div>
+          <div>
+            <h1 className="font-sidebar-header text-sidebar-header text-text-primary">Nuance</h1>
+            <p className="font-label-sm text-label-sm text-text-muted">AI Intelligence Tool</p>
+          </div>
         </div>
-        <div>
-          <h1 className="font-sidebar-header text-sidebar-header text-text-primary">Nuance</h1>
-          <p className="font-label-sm text-label-sm text-text-muted">AI Intelligence Tool</p>
+
+        <button
+          type="button"
+          onClick={() => navigate('/upload')}
+          className="w-full bg-cta hover:bg-primary-container text-on-cta font-label-sm text-label-sm py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors duration-150 ease-in-out scale-95 hover:scale-100 mb-6"
+        >
+          <Icon name="add" />
+          New Meeting
+        </button>
+
+        <div className="flex flex-col gap-1">
+          {NAV.map((item) => (
+            <NavItem key={item.to} {...item} />
+          ))}
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => navigate('/upload')}
-        className="w-full bg-cta hover:bg-primary-container text-on-cta font-label-sm text-label-sm py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors duration-150 ease-in-out scale-95 hover:scale-100"
-      >
-        <Icon name="add" />
-        New Meeting
-      </button>
-
-      <div className="flex-1 flex flex-col gap-1 mt-4">
-        {NAV.map((item) => (
-          <NavItem key={item.to} {...item} />
-        ))}
-      </div>
-
-      <div className="mt-auto">
+      <div className="pt-4 border-t border-border/50">
         <NavItem to="/profile" icon="settings" label="Profile Settings" />
       </div>
     </nav>

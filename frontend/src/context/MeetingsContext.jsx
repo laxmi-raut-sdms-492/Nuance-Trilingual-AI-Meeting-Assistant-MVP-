@@ -13,8 +13,10 @@ const POLL_INTERVAL_MS = 3000
 // fields are what the list and detail screens render.
 export function normalizeMeeting(meeting) {
   const uploadedAt = meeting.uploadedAtISO ? new Date(meeting.uploadedAtISO) : null
+  const durationSeconds = Math.round(Number(meeting.durationSeconds) || 0)
   return {
     ...meeting,
+    durationSeconds,
     date: uploadedAt
       ? uploadedAt.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
       : '—',

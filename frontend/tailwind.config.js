@@ -132,37 +132,37 @@ export default {
             }
           ],
           "transcript-body": [
-            "16px",
+            "12px",
             {
-              "lineHeight": "1.7",
+              "lineHeight": "1.5",
               "fontWeight": "400"
             }
           ],
           "meta-data": [
-            "13px",
+            "11px",
             {
-              "lineHeight": "18px",
+              "lineHeight": "15px",
               "fontWeight": "400"
             }
           ],
           "headline-lg-mobile": [
-            "20px",
-            {
-              "lineHeight": "28px",
-              "fontWeight": "600"
-            }
-          ],
-          "sidebar-header": [
-            "18px",
+            "17px",
             {
               "lineHeight": "24px",
               "fontWeight": "600"
             }
           ],
-          "transcript-body-hi": [
-            "16px",
+          "sidebar-header": [
+            "15px",
             {
-              "lineHeight": "1.8",
+              "lineHeight": "20px",
+              "fontWeight": "600"
+            }
+          ],
+          "transcript-body-hi": [
+            "12px",
+            {
+              "lineHeight": "1.5",
               "fontWeight": "400"
             }
           ],

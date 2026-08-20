@@ -180,11 +180,17 @@ export default function MeetingList({ filter }) {
   const byId = new Map(meetings.map((m) => [m.id, m]))
   const matchById = results ? new Map(results.map((r) => [r.id, r])) : null
 
-  const filtered = isTrash
+  const statusParam = searchParams.get('status')
+
+  const rawFiltered = isTrash
     ? trashMeetings
     : results
       ? results.map((r) => byId.get(r.id) || { ...r, date: '—', time: '—', fileSizeLabel: '—' })
       : meetings
+
+  const filtered = statusParam
+    ? rawFiltered.filter((m) => m.status?.toLowerCase() === statusParam.toLowerCase())
+    : rawFiltered
 
   const listLoading = isTrash ? trashLoading : loading
   const listError = isTrash ? trashError : error

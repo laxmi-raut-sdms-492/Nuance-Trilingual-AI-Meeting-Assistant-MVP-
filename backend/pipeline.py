@@ -489,9 +489,19 @@ class MeetingSession:
         from models.vad import batch_vad_segments
         segs = batch_vad_segments(audio, threshold=profile.vad_threshold)
         if segs:
-            entries.extend(self._consume(segs))
+            total_segs = max(len(segs), 1)
+            for idx, seg in enumerate(segs, start=1):
+                entries.extend(self._consume([seg]))
+                if on_progress:
+                    on_progress(idx / total_segs)
+                if on_transcript_update:
+                    on_transcript_update()
         else:
             entries.extend(self._maybe_vad_fallback(audio, 0))
+            if on_progress:
+                on_progress(0.9)
+            if on_transcript_update:
+                on_transcript_update()
 
         self._finalize_session()
         if on_progress:

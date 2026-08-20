@@ -340,13 +340,16 @@ function SpeakerLabel({ meetingId, speaker, speakerLabel, color, onRenamed, enro
   )
 }
 
-function SidePanel({ icon, iconClass = 'text-primary', title, children }) {
+function SidePanel({ icon, iconClass = 'text-primary', title, action, children }) {
   return (
     <div className="bg-surface border border-border rounded-xl p-5 relative overflow-hidden">
       <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none" />
-      <div className="flex items-center gap-2 mb-4 relative z-10">
-        <Icon name={icon} className={iconClass} />
-        <h3 className="font-sidebar-header text-sidebar-header text-text-primary">{title}</h3>
+      <div className="flex items-center justify-between gap-2 mb-4 relative z-10">
+        <div className="flex items-center gap-2">
+          <Icon name={icon} className={iconClass} />
+          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">{title}</h3>
+        </div>
+        {action && <div>{action}</div>}
       </div>
       <div className="relative z-10">{children}</div>
     </div>
@@ -483,6 +486,7 @@ export default function MeetingDetails() {
   const [enrolledSpeakers, setEnrolledSpeakers] = useState([])
   const [audioVersion, setAudioVersion] = useState(0)
   const [showRawAsr, setShowRawAsr] = useState(false)
+  const [rebuildingSummary, setRebuildingSummary] = useState(false)
   const autoLabeledRef = useRef(false)
 
   const load = useCallback(async () => {
@@ -1014,8 +1018,6 @@ export default function MeetingDetails() {
                   meeting.insights?.attentionNeeded?.length > 0 ||
                   meeting.insights?.pending?.length > 0 ||
                   meeting.insights?.commitments?.length > 0 ||
-                  meeting.decisions?.length > 0 ||
-                  meeting.actionItems?.length > 0 ||
                   meeting.keywords?.length > 0
 
                 if (!hasInsights) {
@@ -1153,56 +1155,6 @@ export default function MeetingDetails() {
                       </div>
                     )}
 
-                    <InsightSection icon="gavel" iconClass="text-processing" title="Decisions">
-                      {meeting.decisions?.length > 0 ? (
-                        <div className="flex flex-col gap-4">
-                          {meeting.decisions.map((d, i) => {
-                            const decision = normalizeDecision(d)
-                            return (
-                              <div key={i} className="pl-3 border-l-2 border-border">
-                                <p className="text-text-primary font-transcript-body text-transcript-body">
-                                  {decision.text}
-                                </p>
-                                <Evidence
-                                  quote={decision.quote}
-                                  time={decision.sourceTime}
-                                  defaultOpen
-                                />
-                              </div>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <NotGenerated what="Decision extraction" />
-                      )}
-                    </InsightSection>
-
-                    <InsightSection icon="task_alt" iconClass="text-success" title="Action Items">
-                      {meeting.actionItems?.length > 0 ? (
-                        <div className="flex flex-col gap-4">
-                          {meeting.actionItems.map((a, i) => (
-                            <div
-                              key={i}
-                              className="pl-3 border-l-2"
-                              style={{ borderColor: a.color || 'var(--color-border)' }}
-                            >
-                              <p className="text-text-primary font-transcript-body text-transcript-body">
-                                {a.title}
-                              </p>
-                              {(a.assignee || a.due) && (
-                                <p className="font-meta-data text-meta-data text-text-muted mt-1">
-                                  {[a.assignee, a.due].filter(Boolean).join(' · ')}
-                                </p>
-                              )}
-                              <Evidence quote={a.quote} time={a.sourceTime} defaultOpen />
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <NotGenerated what="Action item extraction" />
-                      )}
-                    </InsightSection>
-
                     <InsightSection icon="key" iconClass="text-primary" title="Keywords">
                       {meeting.keywords?.length > 0 ? (
                         <div className="flex flex-wrap gap-2">
@@ -1237,10 +1189,6 @@ export default function MeetingDetails() {
                 <SummaryProvenance engine={meeting.summaryEngine} />
               </>
             ) : (
-              /* Not NotGenerated: this slot is the summary, and "no
-                 traceable insights" describes the panel below it. A missing
-                 summary means the summarizer produced nothing, which is what
-                 this says. */
               <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
                 There is no executive summary available from this transcript.
               </p>

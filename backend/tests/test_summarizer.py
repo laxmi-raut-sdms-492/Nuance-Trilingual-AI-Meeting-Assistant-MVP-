@@ -198,42 +198,7 @@ def test_idf_downweights_words_common_to_other_meetings():
 # ------------------------------------------------------- extractive engine
 
 
-def test_extractive_summary_is_verbatim_transcript_text():
-    transcript = [
-        line("The drainage problem near the market is serious and needs attention."),
-        line("Drainage work must start before the monsoon arrives in the city."),
-        line("Okay."),
-    ]
-    result = summarizer._extractive(transcript, summarizer.keywords(transcript))
-    assert result["summaryEngine"] == "extractive"
-    # Every sentence in the summary must be a line that was actually spoken.
-    texts = [l["text"] for l in transcript]
-    assert summarizer.verify_quote(result["summary"].split(".")[0], texts)
 
-
-def test_extractive_finds_cued_decisions_and_actions():
-    transcript = [
-        line("We decided to postpone the launch until August."),
-        line("I will send the revised timeline tomorrow.", speaker="Speaker 2"),
-        line("The weather is nice today."),
-    ]
-    result = summarizer._extractive(transcript, summarizer.keywords(transcript))
-    assert [d["text"] for d in result["decisions"]] == [
-        "We decided to postpone the launch until August."
-    ]
-    # Extractive quote == text: it only ever shows a line as itself.
-    assert result["decisions"][0]["quote"] == "We decided to postpone the launch until August."
-    assert len(result["actionItems"]) == 1
-    # This engine knows who talked and claims nothing more.
-    assert result["actionItems"][0]["assignee"] == "Speaker 2"
-    assert result["actionItems"][0]["quote"] == "I will send the revised timeline tomorrow."
-
-
-def test_extractive_invents_nothing_on_a_meeting_with_no_cues():
-    transcript = [line("Good morning everyone, the weather is pleasant.")]
-    result = summarizer._extractive(transcript, summarizer.keywords(transcript))
-    assert result["decisions"] == []
-    assert result["actionItems"] == []
 
 
 # -------------------------------------------------------------- map-reduce
@@ -252,6 +217,7 @@ def test_empty_transcript_returns_empty_fields_not_a_summary():
         "decisions": [],
         "actionItems": [],
         "keywords": [],
+        "insights": {},
         "summaryEngine": None,
     }
 
@@ -297,12 +263,11 @@ def test_release_vram_is_quiet_when_ollama_is_absent(monkeypatch):
     assert summarizer.release_vram("some-model") is False
 
 
-def test_summarize_falls_back_to_extractive_when_no_model(monkeypatch):
-    """An unreachable Ollama must degrade, not raise — the transcript is done."""
+def test_summarize_returns_empty_when_no_model(monkeypatch):
+    """An unreachable Ollama returns clean empty results without failing."""
     monkeypatch.setattr(summarizer, "model_available", lambda *a, **k: False)
     transcript = [line("We decided to postpone the launch until August.")]
     result = summarizer.summarize(transcript)
-    assert result["summaryEngine"] == "extractive"
-    assert [d["text"] for d in result["decisions"]] == [
-        "We decided to postpone the launch until August."
-    ]
+    assert result["summaryEngine"] is None
+    assert result["decisions"] == []
+    assert result["actionItems"] == []

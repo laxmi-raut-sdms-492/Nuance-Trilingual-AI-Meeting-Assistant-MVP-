@@ -76,6 +76,9 @@ export function MeetingsProvider({ children }) {
     formData.append('title', details.title?.trim() || '')
     formData.append('agenda', details.agenda?.trim() || '')
     formData.append('stt_adapter', details.stt_adapter || 'local')
+    formData.append('meeting_type', details.meetingType || 'internal')
+    formData.append('department', details.department || 'AI Team')
+    formData.append('project_name', details.projectName?.trim() || '')
 
     // Backward compatible: any existing caller that doesn't pass
     // processingMode still sends 'local', which is also the backend's own

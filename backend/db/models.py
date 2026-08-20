@@ -122,6 +122,10 @@ class Meeting(Base):
     stt_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
     insights: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
+    meeting_type: Mapped[str | None] = mapped_column(String(32), nullable=True, default="internal")
+    department: Mapped[str | None] = mapped_column(String(64), nullable=True, default="AI Team")
+    project_name: Mapped[str | None] = mapped_column(String(128), nullable=True, default="")
+
     transcript_lines: Mapped[list[TranscriptLine]] = relationship(
         back_populates="meeting",
         cascade="all, delete-orphan",

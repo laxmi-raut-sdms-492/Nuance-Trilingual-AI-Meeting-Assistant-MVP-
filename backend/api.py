@@ -175,6 +175,9 @@ def create_meeting(
     stt_adapter: str = Form("local"),
     processing_mode: str = Form(""),
     stt_provider: str = Form(""),
+    meeting_type: str = Form("internal"),
+    department: str = Form("AI Team"),
+    project_name: str = Form(""),
 ):
     extension = _extension(file.filename)
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -211,6 +214,9 @@ def create_meeting(
         "error": None,
         "processingMode": adapter_choice,
         "sttProvider": stt_provider or None,
+        "meetingType": meeting_type.strip().lower() if meeting_type else "internal",
+        "department": department.strip() if department else "AI Team",
+        "projectName": project_name.strip() if project_name else "",
         "duration": None,
         "durationSeconds": None,
         "participants": None,
@@ -862,7 +868,7 @@ def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
                     meeting_id,
                     transcript=session.transcript,
                     speakerStats=speaker_stats,
-                    participants=session.participant_count() or None,
+                    participants=session.participant_count() or 0,
                     languages=languages,
                     language=languages[0]["name"] if languages else None,
                     durationSeconds=round(wall_clock_seconds, 1),

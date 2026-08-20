@@ -43,6 +43,9 @@ export default function UploadMeeting() {
 
   const [title, setTitle] = useState('')
   const [agenda, setAgenda] = useState('')
+  const [meetingType, setMeetingType] = useState('internal') // internal | client
+  const [department, setDepartment] = useState('AI Team')
+  const [projectName, setProjectName] = useState('')
   const [sttAdapter, setSttAdapter] = useState('local') // local | cloud
   const [formErrors, setFormErrors] = useState({})
   const [processingMode, setProcessingMode] = useState('local') // local | cloud
@@ -56,7 +59,7 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
-  const details = { title, agenda, stt_adapter: sttAdapter, processingMode: sttAdapter }
+  const details = { title, agenda, stt_adapter: sttAdapter, processingMode: sttAdapter, meetingType, department, projectName }
 
   const validateDetails = () => {
     const errors = {}
@@ -148,6 +151,9 @@ export default function UploadMeeting() {
     reset()
     setTitle('')
     setAgenda('')
+    setMeetingType('internal')
+    setDepartment('AI Team')
+    setProjectName('')
     setFormErrors({})
     setProcessingMode('local')
     setStep('details')
@@ -183,7 +189,7 @@ export default function UploadMeeting() {
       {step === 'details' && (
         <div className="bg-surface rounded-xl border border-border overflow-hidden relative">
           <div className="h-1 w-full bg-primary-container absolute top-0 left-0" />
-          <form onSubmit={handleContinue} className="p-8 space-y-8" noValidate>
+          <form onSubmit={handleContinue} className="p-8 space-y-6" noValidate>
             <div className="space-y-2">
               <label
                 className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
@@ -196,7 +202,7 @@ export default function UploadMeeting() {
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Q3 Marketing Sync"
+                placeholder="e.g. Q3 Architecture & Sprint Sync"
                 aria-invalid={Boolean(formErrors.title)}
                 aria-describedby={formErrors.title ? 'title-error' : undefined}
                 className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors ${
@@ -204,6 +210,82 @@ export default function UploadMeeting() {
                 }`}
               />
               {formErrors.title && <FieldError id="title-error">{formErrors.title}</FieldError>}
+            </div>
+
+            {/* Meeting Type Selection: Internal vs Client */}
+            <div className="space-y-2">
+              <label className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider">
+                Meeting Category
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setMeetingType('internal')}
+                  className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${
+                    meetingType === 'internal'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border bg-surface text-text-muted hover:text-text-primary hover:border-text-muted'
+                  }`}
+                >
+                  <Icon name="groups" className="text-lg" />
+                  <span>👥 Internal Meeting</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMeetingType('client')}
+                  className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${
+                    meetingType === 'client'
+                      ? 'border-primary bg-primary/10 text-primary'
+                      : 'border-border bg-surface text-text-muted hover:text-text-primary hover:border-text-muted'
+                  }`}
+                >
+                  <Icon name="handshake" className="text-lg" />
+                  <span>🤝 Client Meeting</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Department & Project / Client Name Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <label
+                  className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
+                  htmlFor="meeting-department"
+                >
+                  Department
+                </label>
+                <select
+                  id="meeting-department"
+                  value={department}
+                  onChange={(e) => setDepartment(e.target.value)}
+                  className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body bg-surface text-text-primary transition-colors cursor-pointer"
+                >
+                  <option value="AI Team">🤖 AI Team</option>
+                  <option value="Software">💻 Software Engineering</option>
+                  <option value="QA">🧪 QA & Testing</option>
+                  <option value="Product & Design">🎨 Product & Design</option>
+                  <option value="Management">📊 Management</option>
+                  <option value="Sales & Marketing">🚀 Sales & Marketing</option>
+                  <option value="Other">📁 Other</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label
+                  className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
+                  htmlFor="project-name"
+                >
+                  {meetingType === 'client' ? 'Client / Account Name' : 'Project Name'}
+                </label>
+                <input
+                  id="project-name"
+                  type="text"
+                  value={projectName}
+                  onChange={(e) => setProjectName(e.target.value)}
+                  placeholder={meetingType === 'client' ? 'e.g. Acme Corp' : 'e.g. Nuance AI Assistant'}
+                  className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors"
+                />
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -224,7 +306,7 @@ export default function UploadMeeting() {
                 maxLength={AGENDA_LIMIT}
                 onChange={(e) => setAgenda(e.target.value)}
                 placeholder="What will this meeting cover?"
-                rows={4}
+                rows={3}
                 aria-invalid={Boolean(formErrors.agenda)}
                 aria-describedby={formErrors.agenda ? 'agenda-error' : undefined}
                 className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors resize-y ${

@@ -62,6 +62,9 @@ _MEETING_FIELDS = {
     "processingMode": "processing_mode",
     "sttProvider": "stt_provider",
     "insights": "insights",
+    "meetingType": "meeting_type",
+    "department": "department",
+    "projectName": "project_name",
 }
 
 
@@ -224,7 +227,7 @@ def _to_dict(meeting: Meeting) -> dict:
         # who doubts a terse action item can still see what was actually said.
         "decisions": [
             {
-                "text": _shorten_action_title(d.text, max_words=14),
+                "text": d.text,
                 "quote": d.quote,
                 "sourceTime": d.source_time,
             }
@@ -232,7 +235,7 @@ def _to_dict(meeting: Meeting) -> dict:
         ],
         "actionItems": [
             {
-                "title": _shorten_action_title(a.title, max_words=10),
+                "title": a.title,
                 "assignee": a.assignee,
                 "due": a.due,
                 "color": a.color,
@@ -434,6 +437,14 @@ def add_meeting(record: dict) -> dict:
         return _to_dict(meeting)
 
 
+_NON_NULLABLE_MEETING_DEFAULTS = {
+    "participants": 0,
+    "progress": 0,
+    "failed_segments": 0,
+    "duration_seconds": 0.0,
+}
+
+
 def update_meeting(meeting_id: str, **updates) -> dict | None:
     """
     Partial update. Only the keys passed are written.
@@ -449,7 +460,10 @@ def update_meeting(meeting_id: str, **updates) -> dict | None:
 
         for camel, column in _MEETING_FIELDS.items():
             if camel in updates:
-                setattr(meeting, column, updates[camel])
+                val = updates[camel]
+                if val is None and column in _NON_NULLABLE_MEETING_DEFAULTS:
+                    val = _NON_NULLABLE_MEETING_DEFAULTS[column]
+                setattr(meeting, column, val)
 
         if "uploadedAtISO" in updates:
             meeting.uploaded_at = _parse_iso(updates["uploadedAtISO"])

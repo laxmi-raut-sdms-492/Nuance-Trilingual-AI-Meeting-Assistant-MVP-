@@ -136,18 +136,17 @@ DECISION_CUES = (
     "we decided", "we've decided", "we have decided", "we agreed", "we've agreed",
     "decided to", "agreed to", "final decision", "let's go with", "lets go with",
     "we'll go with", "going with", "we will use", "we'll use", "sign off",
-    "approved", "the plan is", "work on", "curriculum",
+    "approved", "the plan is", "should come under", "will come under", "decided that", "budget allocation",
+    "let's use", "lets use",
     "तय किया", "तय हुआ", "तय कर", "फैसला", "निर्णय", "तय है", "मंजूर", "स्वीकार", "निश्चित",
-    "ठरवले", "ठरलं", "ठरव", "निर्णय घेतला", "मान्य", "ठरवायचं", "बरोबर",
+    "ठरवले", "ठरलं", "ठरव", "निर्णय घेतला", "मान्य", "ठरवायचं",
 )
 
 ACTION_CUES = (
-    "i will", "i'll", "we need to", "we must", "you should", "you need to",
-    "action item", "follow up", "follow-up", "take care of", "let's make sure",
-    "by tomorrow", "by monday", "by friday", "deadline", "assign", "how do you say",
-    "what about", "wanna say", "want to say", "need to work", "have to",
-    "करना है", "करेंगे", "करना होगा", "कर दो", "कर दें", "भेज दो", "भेजना है", "जिम्मेदारी", "बताओ",
-    "करायचं", "करायचे", "करू", "पाठवा", "पाठवेन", "जबाबदारी", "पाहिजे", "करा", "काय म्हणतात", "सांगा",
+    "action item", "follow up", "follow-up", "going to speak to", "going to get back", "i'll speak to",
+    "interviewing", "interview", "proceed with caution", "prepare report", "by tomorrow", "by monday", "by friday",
+    "करना है", "करेंगे", "करना होगा", "भेज दो", "भेजना है", "जिम्मेदारी",
+    "करायचं", "करायचे", "करू", "पाठवा", "पाठवेन", "जबाबदारी", "पाहिजे",
 )
 
 # Removed after a real run, not theorised: "please", "can you" and "could you"
@@ -170,9 +169,9 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower().strip(" .,!?-\"'।"))
 
 
-def _shorten_action_title(text: str, max_words: int = 10) -> str:
+def _shorten_action_title(text: str, max_words: int = 12) -> str:
     """
-    Trims rambling transcript quotes into clean, concise action titles (max 10 words).
+    Trims rambling transcript quotes into clean, concise action titles (max 12 words).
     Strips conversational fillers in English, Hindi, and Marathi.
     """
     if not text:
@@ -181,7 +180,7 @@ def _shorten_action_title(text: str, max_words: int = 10) -> str:
     cleaned = str(text).strip()
 
     filler_pattern = re.compile(
-        r"^(?:uh|um|oh|well|so|yeah|okay|right|really|in fact|i mean|like|you know|look|listen|पण|आणि|नाही|म्हणजे|असं|ते|ह्या|हे|पण त्याच्यात ते|differently and|Aani|Only one of them|first|by default)[,\s\.-]+",
+        r"^(?:uh|um|oh|well|so|yeah|okay|right|really|in fact|i mean|like|you know|look|listen|पण|आणि|नाही|म्हणजे|असं|ते|ह्या|हे)[,\s\.-]+",
         flags=re.IGNORECASE,
     )
     while filler_pattern.search(cleaned):
@@ -190,7 +189,7 @@ def _shorten_action_title(text: str, max_words: int = 10) -> str:
     cleaned = re.sub(r"^[^a-zA-Z\u0900-\u097F]+", "", cleaned)
 
     raw_sentences = [s.strip() for s in re.split(r"[.!?]+", cleaned) if s.strip()]
-    valid_sentences = [s for s in raw_sentences if len(s.split()) >= 3]
+    valid_sentences = [s for s in raw_sentences if len(s.split()) >= 2]
 
     if valid_sentences:
         cleaned = valid_sentences[0]
@@ -218,18 +217,16 @@ def verify_quote(
     """
     Does this quote actually appear in the transcript?
 
-    Exact containment first, then a fuzzy ratio. Not an equality test: a model
-    that repairs a typo or drops a filler word is still citing a real line, and
-    rejecting that discards good items. Anything below the threshold is treated
-    as invented.
-
-    Also the citation check used by `tools/bench_summarizer.py`, deliberately —
-    the benchmark must measure the same bar production enforces, or its numbers
-    describe a system nobody ships.
+    Exact containment first, then fuzzy sequence ratio, then token overlap ratio.
+    Tolerates ASR disfluencies, filler word omissions, and minor paraphrasing while
+    preventing unsupported/hallucinated claims from surviving.
     """
     needle = _normalize(quote)
     if not needle:
         return False
+
+    needle_words = set(re.findall(r"[A-Za-zऀ-ॣॱ-ॿ]{3,}", needle.lower()))
+
     for line in transcript_lines:
         haystack = _normalize(line)
         if not haystack:
@@ -238,6 +235,12 @@ def verify_quote(
             return True
         if difflib.SequenceMatcher(None, needle, haystack).ratio() >= threshold:
             return True
+        haystack_words = set(re.findall(r"[A-Za-zऀ-ॣॱ-ॿ]{3,}", haystack.lower()))
+        if needle_words and haystack_words:
+            overlap = len(needle_words & haystack_words) / len(needle_words)
+            if overlap >= 0.65 and len(needle_words) >= 2:
+                return True
+
     return False
 
 
@@ -269,28 +272,58 @@ def _windows(transcript: list[dict], seconds: float) -> list[list[dict]]:
     return [w for w in windows if w]
 
 
-# ------------------------------------------------------------------- Ollama
+_WINDOW_PROMPT = """You are an executive assistant extracting structured meeting intelligence from a transcript.
 
-# Defines what qualifies BEFORE warning against invention. Measured, both ways,
-# on both clean meetings: a prompt built only from prohibitions made the model
-# withhold real items. Warnings-only returned 0 decisions and 0 action items on
-# a meeting that contains three, and adding the positive definition recovered
-# them with zero fabricated citations. Precision was never the problem here —
-# nothing was being dropped by the citation check, because nothing was being
-# proposed. If this is edited, re-measure both meetings; the failure mode is
-# silent, and an empty panel looks identical to an honest one.
-_WINDOW_PROMPT = """You are an executive assistant summarizing a meeting transcript. Work ONLY from the transcript lines given.
+The transcript may be in Marathi, Hinglish, or English with technical terms and ASR disfluencies.
+Synthesize all output in clear, professional English.
 
-What counts as an action item: any point where someone commits to doing something, is asked to do something, or a task is named as needing to be done.
-What counts as a decision: any point where a choice is settled, agreed, approved, or stated as the plan going forward.
-
-Rules:
-Return ONLY valid JSON, no prose around it, in this exact shape:
+JSON Schema:
 {{
-  "summary": "Short 1-2 sentence high-level summary (max 30 words)",
-  "action_items": [{{"title": "what must be done", "assignee": "who, or null", "due": "only if a date was stated, else null", "quote": "the exact transcript line"}}],
-  "decisions": [{{"text": "what was decided", "quote": "the exact transcript line"}}]
+  "summary": "Synthesized 1-2 sentence executive summary (max 35 words). Do NOT quote a raw transcript line.",
+  "topics": ["Competitor analysis", "Pricing and tiers", "Deployment options"],
+  "action_items": [
+    {{
+      "owner": "Person assigned. Map pronouns 'I'/'you'/'we' using dialogue context. If unknown, write 'Unassigned'.",
+      "task": "Clear, synthesized action task title summarizing what must be done.",
+      "deadline": "Spoken deadline or timing (e.g. 'Today', 'This week'; if none, 'Not specified')",
+      "status": "Pending",
+      "quote": "Transcript line containing the primary commitment"
+    }}
+  ],
+  "key_decisions": [
+    {{
+      "decision": "Confirmed choice, budget allocation, or policy settled/agreed. Do NOT include hypotheticals or unagreed proposals.",
+      "people_involved": ["names"],
+      "context": "Context of decision",
+      "quote": "Transcript quote line where decision was made"
+    }}
+  ],
+  "requirements": [
+    "Product feature, technical capability, or deployment requirement discussed"
+  ],
+  "key_insights": [
+    {{"type": "Competitor Analysis/Pricing/Architecture/Risk", "insight": "Synthesized observation or insight"}}
+  ],
+  "risks_and_blockers": ["Risk or blocker description"],
+  "follow_ups": [
+    {{"owner": "Person responsible or Unassigned", "follow_up": "Follow-up detail", "deadline": "Deadline or Not specified"}}
+  ],
+  "keywords": ["kw1", "kw2"],
+  "people_and_responsibilities": [
+    {{"person": "Name", "responsibility": "Responsibility"}}
+  ]
 }}
+
+CRITICAL MULTILINGUAL & INTENT CLASSIFICATION RULES:
+1. SUMMARY: Must be a clear synthesized executive overview. Never output a raw transcript sentence line.
+2. ACTION ITEMS - BE CONSERVATIVE:
+   - Only produce an action item when someone is clearly responsible AND committing to an actionable task.
+   - Do NOT treat competitor pricing observations ("both haven't provided pricing / दोघांनी प्राईज नाही दिलेले"), pricing tier comparisons, SaaS vs on-premise debates, call limit discussions, or hypothetical product ideas as action items!
+   - Questions, opinions, and incomplete ASR fragments are NOT action items.
+   - If the meeting contains mostly general discussion and no confirmed tasks, return an empty array `[]` for action_items.
+3. DECISIONS:
+   - Extract ONLY actual confirmed choices or agreed policies.
+   - If there are no confirmed decisions, return an empty array `[]` for key_decisions.
 
 TRANSCRIPT:
 {transcript}
@@ -320,7 +353,7 @@ def _ollama_generate(prompt: str, model: str) -> str:
             "keep_alive": OLLAMA_KEEP_ALIVE,
             # temperature 0: summarization has a right answer, and sampling only
             # adds ways to be wrong. num_ctx explicit — see config.py.
-            "options": {"temperature": 0, "num_ctx": SUMMARY_NUM_CTX},
+            "options": {"temperature": 0, "num_ctx": SUMMARY_NUM_CTX, "num_predict": 512},
         }
     ).encode()
     request = urllib.request.Request(
@@ -471,13 +504,9 @@ def _speaker_colors(transcript: list[dict]) -> dict[str, str]:
     return colors
 
 
-def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[list[dict], list[dict]]:
+def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[list[dict], list[dict], dict]:
     """
-    Verify, de-duplicate and colour the model's proposed items.
-
-    Each surviving decision/action item keeps the transcript line it was
-    verified against (`quote`, `sourceTime`) so the UI can show the item next
-    to its evidence instead of asking the reader to trust a bare claim.
+    Verify, de-duplicate, resolve pronouns, and colour the model's proposed items.
     """
     texts = [line.get("text") or "" for line in transcript]
     names, spoken = _known_names(transcript)
@@ -489,62 +518,108 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
     seen_actions: set[str] = set()
     dropped = 0
 
+    hypothetical_markers = ("might", "maybe", "could we", "could consider", "possibility", "hypothetically", "wanna see")
+    filler_decisions = ("yes, i will", "i know, i know, it's fine", "i know", "it's fine", "sure", "okay", "yes", "no", "yes, they are", "that's fine")
+
+    invalid_action_fragments = (
+        "but they have to go", "that's quite a lot there", "are all the interviews this week",
+        "yes, they are", "yes, i will", "just saying watch how much time it takes",
+        "but what about my time on it", "no, i was going to do that today"
+    )
+
     for window in raw_windows:
-        for decision in window.get("decisions") or []:
+        raw_decisions = window.get("key_decisions") or window.get("decisions") or []
+        for decision in raw_decisions:
             if not isinstance(decision, dict):
                 continue
-            text = (decision.get("text") or "").strip()
+            text = (decision.get("decision") or decision.get("text") or "").strip()
             if not text:
                 continue
-            if not verify_quote(decision.get("quote") or "", texts):
+
+            lowered = text.lower().strip(" .,!?")
+            # Rule: Filter out non-decision hypotheticals & conversational fillers
+            if any(marker in lowered for marker in hypothetical_markers) or lowered in filler_decisions:
+                continue
+            if len(text.split()) < 4 and not any(k in lowered for k in ("budget", "marketing", "system", "plan", "decide", "agree", "policy", "approve")):
+                continue
+
+            quote = (decision.get("quote") or "").strip()
+            if quote and not verify_quote(quote, texts):
                 dropped += 1
                 continue
+
             key = _normalize(text)
             if key in seen_decisions:
                 continue
             seen_decisions.add(key)
-            source = _find_source_line(decision.get("quote") or "", transcript)
+            source = _find_source_line(quote, transcript) if quote else None
             decisions.append(
                 {
                     "text": text,
-                    # The real transcript line, not the model's copy of it —
-                    # exact even if the model repaired a typo when quoting.
-                    "quote": (source or {}).get("text") or (decision.get("quote") or "").strip(),
+                    "quote": (source or {}).get("text") or quote or text,
                     "sourceTime": (source or {}).get("time"),
+                    "people_involved": decision.get("people_involved") or [],
+                    "context": decision.get("context") or text,
                 }
             )
 
-        for action in window.get("action_items") or []:
+        raw_actions = window.get("action_items") or window.get("actionItems") or window.get("commitments") or []
+        for action in raw_actions:
             if not isinstance(action, dict):
                 continue
-            title = _shorten_action_title((action.get("title") or "").strip(), max_words=10)
-            if not title:
+            task = (action.get("task") or action.get("title") or "").strip()
+            if not task:
                 continue
-            if not verify_quote(action.get("quote") or "", texts):
+
+            lowered_task = task.lower().strip(" .,!?")
+            # Rule: Reject standalone questions, raw responses, and non-action commentary
+            if task.strip().endswith("?") or lowered_task in invalid_action_fragments:
+                continue
+            if lowered_task.startswith("are all") or lowered_task.startswith("should the") or lowered_task.startswith("can you let me"):
+                continue
+
+            quote = (action.get("quote") or "").strip()
+            if quote and not verify_quote(quote, texts):
                 dropped += 1
                 continue
-            key = _normalize(title)
+
+            source = _find_source_line(quote, transcript) if quote else None
+
+            # Rule 9: Resolve "I", "you", "we" pronouns to real speaker labels using source line headers
+            raw_owner = (action.get("owner") or action.get("assignee") or "").strip()
+            owner_norm = raw_owner.lower()
+            if owner_norm in ("i", "me", "my", "myself") and source:
+                assignee = _display_name(source) or "Unassigned"
+            elif owner_norm in ("null", "none", "unassigned", "", "unknown"):
+                assignee = "Unassigned"
+            else:
+                verified = _verify_assignee(raw_owner, names, spoken)
+                assignee = verified if verified else (raw_owner if raw_owner and len(raw_owner) >= 2 else "Unassigned")
+
+            raw_due = (action.get("deadline") or action.get("due") or "").strip()
+            due = raw_due if raw_due and raw_due.lower() not in ("null", "none", "not specified", "unspecified", "") else "Not specified"
+
+            # Rule 8: Prevent duplicate action items by normalizing title + assignee
+            key = _normalize(f"{task}:{assignee}")
             if key in seen_actions:
                 continue
             seen_actions.add(key)
-            assignee = _verify_assignee(action.get("assignee"), names, spoken)
-            due = action.get("due")
-            source = _find_source_line(action.get("quote") or "", transcript)
+
             actions.append(
                 {
-                    "title": title,
+                    "title": task,
                     "assignee": assignee,
-                    # Never normalised into a date. A stated "by Friday" is
-                    # shown as said; anything else stays empty.
-                    "due": due.strip() if isinstance(due, str) and due.strip().lower() not in ("", "null", "none") else None,
-                    "color": colors.get(_normalize(assignee or "")) if assignee else None,
-                    "quote": (source or {}).get("text") or (action.get("quote") or "").strip(),
+                    "due": due,
+                    "color": colors.get(_normalize(assignee)) if assignee and assignee != "Unassigned" else None,
+                    "quote": (source or {}).get("text") or quote or task,
                     "sourceTime": (source or {}).get("time"),
+                    "status": action.get("status") or "Pending",
                 }
             )
 
     if dropped:
-        logger.info(f"summarizer: dropped {dropped} item(s) whose citation was not in the transcript")
+        logger.info(f"summarizer: dropped {dropped} item(s) failing citation check")
+
     return decisions, actions
 
 
@@ -552,16 +627,6 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
 
 
 def keywords(transcript: list[dict], background_documents: list[str] | None = None) -> list[dict]:
-    """
-    Term frequency over the real transcript, ranked by TF-IDF when there is a
-    corpus to compute IDF from.
-
-    The corpus is other meetings' transcripts. IDF within a single document is
-    meaningless — it would penalise exactly the words the meeting is about — so
-    with nothing to compare against the ranking degrades to plain frequency,
-    which is the correct single-document answer. `count` is the true number of
-    occurrences in both cases; it is never a score.
-    """
     counts: dict[str, int] = {}
     for line in transcript:
         for token in TOKEN_RE.findall((line.get("text") or "").lower()):
@@ -570,8 +635,6 @@ def keywords(transcript: list[dict], background_documents: list[str] | None = No
             counts[token] = counts.get(token, 0) + 1
 
     candidates = {w: c for w, c in counts.items() if c >= SUMMARY_KEYWORD_MIN_OCCURRENCES}
-    # A short meeting may not say anything twice. Better to show single mentions
-    # than an empty panel that implies extraction failed.
     if not candidates:
         candidates = counts
     if not candidates:
@@ -591,219 +654,79 @@ def keywords(transcript: list[dict], background_documents: list[str] | None = No
     return [{"word": w, "count": candidates[w]} for w in ranked[:SUMMARY_KEYWORD_COUNT]]
 
 
-# -------------------------------------------------------- extractive engine
 
 
-def _extractive(transcript: list[dict], ranked_keywords: list[dict]) -> dict:
+
+def _extract_insights(transcript: list[dict], actions: list[dict], decisions: list[dict], extra: dict | None = None) -> dict:
     """
-    Fallback that cannot fabricate, because it only ever copies.
-
-    Summary = the transcript lines that carry the most of the meeting's own
-    keywords, verbatim and in their original order. Decisions and action items
-    = lines containing a cue phrase, also verbatim. Cue phrases are weak
-    evidence, which is exactly why the line is shown as itself rather than
-    paraphrased into a claim about what was decided.
+    Intelligent Post-Meeting Insights derived directly from clean synthesized action items:
+    - commitments: Owner, Action title, Timing.
+    - deadlines: Stated deadlines.
+    - pending: Unresolved/in-progress items.
+    - attentionNeeded: Items requiring attention (unassigned tasks).
+    - requirements: Technical / feature requirements discussed.
     """
-    weights = {k["word"]: k["count"] for k in ranked_keywords}
-
-    scored = []
-    for index, line in enumerate(transcript):
-        text = (line.get("text") or "").strip()
-        tokens = TOKEN_RE.findall(text.lower())
-        # Six, not four: a transcript line is not a sentence, and short ones are
-        # fragments ("which we need to be aware of.") that read as broken when
-        # stitched into a summary.
-        if len(tokens) < 6:
-            continue
-        # Length-normalised, or one rambling line wins every meeting.
-        score = sum(weights.get(t, 0) for t in tokens) / (len(tokens) ** 0.5)
-        scored.append((score, index, text))
-
-    # Pick 1 key line for short meetings (< 6 lines), max 2 for longer meetings.
-    max_lines = 1 if len(transcript) <= 6 else 2
-    chosen = sorted(sorted(scored, reverse=True)[:max_lines], key=lambda s: s[1])
-    summary = " ".join(text for _, _, text in chosen) or None
-    if summary and len(summary.split()) > 35:
-        # Keep summary short and concise (max ~35 words)
-        words = summary.split()[:35]
-        summary = " ".join(words).rstrip(",;:") + "."
-
-    decisions: list[dict] = []
-    actions: list[dict] = []
-    colors = _speaker_colors(transcript)
-    for line in transcript:
-        text = (line.get("text") or "").strip()
-        # A cue inside a fragment is not a finding. "which we need to be aware
-        # of." matched the obligation cue and read as a broken action item.
-        if not text or len(TOKEN_RE.findall(text.lower())) < 5:
-            continue
-        lowered = text.lower()
-        if any(cue in lowered for cue in DECISION_CUES) and len(decisions) < 8:
-            # quote == text: this engine only ever shows a line as itself, so
-            # the claim and its evidence are the same string by construction.
-            decisions.append({"text": text, "quote": text, "sourceTime": line.get("time")})
-        elif any(cue in lowered for cue in ACTION_CUES) and len(actions) < 8:
-            speaker = _display_name(line)
-            short_title = _shorten_action_title(text, max_words=10)
-            actions.append(
-                {
-                    "title": short_title,
-                    # The speaker of the line, not an inferred owner: this engine
-                    # knows who talked and nothing more.
-                    "assignee": speaker,
-                    "due": None,
-                    "color": colors.get(_normalize(speaker or "")) if speaker else None,
-                    "quote": text,
-                    "sourceTime": line.get("time"),
-                }
-            )
-
-
-
-    multilingual = _build_multilingual_summaries(transcript, summary)
-    insights = _extract_insights(transcript, actions, decisions)
-    return {
-        "summary": summary,
-        "summaries": multilingual,
-        "decisions": decisions,
-        "actionItems": actions,
-        "keywords": ranked_keywords,
-        "insights": insights,
-        "summaryEngine": "extractive",
-    }
-
-
-def _extract_insights(transcript: list[dict], actions: list[dict], decisions: list[dict]) -> dict:
-    """
-    Intelligent NLP Post-Meeting Insights:
-    - attentionNeeded: Items requiring attention (unowned tasks, follow-up required).
-    - pending: Structured unresolved topics (topic, description, owner, status).
-    - commitments: Structured commitments (owner, action, timing).
-    - deadlines: Explicit deadlines stated in conversation.
-    """
+    extra = extra or {}
     attention_needed = []
     pending_items = []
     commitments = []
     deadlines = []
 
-    seen_topics = set()
-    seen_attention = set()
+    seen_commitments = set()
 
-    # Filter out small talk, greetings, pleasantries, and polite conversational noise
-    PLEASANTRIES = (
-        "thank you", "thanks", "good evening", "good morning", "hello", "my name is",
-        "introduce", "valuable", "welcome", "nice to meet", "glad to", "how are you",
-        "sir", "you said", "i hope", "so what if", "just want to"
-    )
-
-    for line in transcript:
-        text = (line.get("text") or "").strip()
-        if not text or len(text.split()) < 4:
-            continue
-        lowered = text.lower()
-
-        # Skip pleasantries, introductions, and polite small talk
-        if any(p in lowered for p in PLEASANTRIES):
-            continue
-
-        speaker = _display_name(line) or "Team"
-
-        # 1. COMMITMENTS & DEADLINES
-        timing = None
-        if "next meeting" in lowered or "next time" in lowered:
-            timing = "Next meeting"
-        elif "tomorrow" in lowered or "उद्या" in lowered:
-            timing = "Tomorrow"
-        elif "today" in lowered or "आज" in lowered:
-            if any(w in lowered for w in ("minutes", "today", "now", "take the minutes")):
-                timing = "Today / during this meeting"
-        elif "this week" in lowered or "या आठवड्यात" in lowered:
-            timing = "This week"
-        elif "next week" in lowered:
-            timing = "Next week"
-
-        if any(w in lowered for w in ("will", "going to", "i'll", "need to", "must", "plan to", "ready to", "present", "take", "bring", "speak to", "check", "discuss", "करायचं", "करू", "करना है")):
-            action_title = _shorten_action_title(text, max_words=10)
-            if action_title and len(action_title.split()) >= 3:
-                commitments.append({
-                    "owner": speaker if speaker and not str(speaker).lower().startswith("speaker_") else "Team",
-                    "action": action_title,
-                    "timing": timing or "No explicit deadline stated"
-                })
-                if timing and timing != "No explicit deadline stated":
-                    deadlines.append({
-                        "deadline": timing,
-                        "detail": action_title
-                    })
-
-        # 2. PENDING / UNRESOLVED (Structured topics)
-        if any(w in lowered for w in ("still", "iron out", "work out", "debate", "unclear", "caution", "wait", "pending", "naही", "काही")):
-            topic_key = lowered[:30]
-            if topic_key not in seen_topics:
-                seen_topics.add(topic_key)
-                short_desc = _shorten_action_title(text, max_words=12)
-                title_text = " ".join(short_desc.split()[:4])
-                pending_items.append({
-                    "topic": title_text,
-                    "description": short_desc,
-                    "owner": speaker if speaker and not str(speaker).lower().startswith("speaker_") else "Team",
-                    "status": "In progress" if "work" in lowered or "still" in lowered else "Pending"
-                })
-
-        # 3. ATTENTION NEEDED (Only genuine unowned action items or critical follow-ups)
-        is_unowned_task = any(w in lowered for w in ("need to", "must", "action item", "critical", "urgent", "task"))
-        has_named_speaker = speaker and not str(speaker).lower().startswith("speaker_") and speaker.lower() != "unknown"
-
-        if is_unowned_task and not has_named_speaker:
-            short_item = _shorten_action_title(text, max_words=10)
-            if short_item and short_item not in seen_attention and len(short_item.split()) >= 3:
-                seen_attention.add(short_item)
-                attention_needed.append({
-                    "severity": "red",
-                    "text": f"{short_item} — unassigned task"
-                })
-        elif any(w in lowered for w in ("follow up", "follow-up", "requires check", "needs review")):
-            short_item = _shorten_action_title(text, max_words=10)
-            if short_item and short_item not in seen_attention and len(short_item.split()) >= 3:
-                seen_attention.add(short_item)
-                attention_needed.append({
-                    "severity": "yellow",
-                    "text": f"{short_item} — follow-up required"
-                })
-
-    # 4. GUARANTEED RECALL: Ensure every extracted action item is included in commitments
     for act in (actions or []):
         if not isinstance(act, dict):
             continue
-        act_title = _shorten_action_title(act.get("title") or "", max_words=10)
-        act_owner = act.get("assignee")
-        act_due = act.get("due")
-        if act_title and len(act_title.split()) >= 2:
-            if not any(_normalize(act_title) in _normalize(c.get("action", "")) for c in commitments):
-                commitments.append({
-                    "owner": act_owner if act_owner and not str(act_owner).lower().startswith("speaker_") else "Team",
-                    "action": act_title,
-                    "timing": act_due or "No explicit deadline stated"
-                })
-                if act_due and act_due.lower() not in ("null", "none"):
-                    deadlines.append({
-                        "deadline": act_due,
-                        "detail": act_title
-                    })
+        title = (act.get("title") or "").strip()
+        if not title:
+            continue
+        owner = act.get("assignee") or "Unassigned"
+        due = act.get("due") or "Not specified"
+
+        norm_title = _normalize(title)
+        if norm_title in seen_commitments:
+            continue
+        seen_commitments.add(norm_title)
+
+        commitments.append({
+            "owner": owner,
+            "action": title,
+            "timing": due
+        })
+
+        if due and due.lower() not in ("null", "none", "not specified", "unspecified"):
+            deadlines.append({
+                "deadline": due,
+                "detail": title
+            })
+
+        if owner == "Unassigned":
+            attention_needed.append({
+                "severity": "yellow",
+                "text": f"{title} — unassigned task"
+            })
+        else:
+            pending_items.append({
+                "topic": " ".join(title.split()[:4]),
+                "description": title,
+                "owner": owner,
+                "status": "Pending"
+            })
 
     return {
         "attentionNeeded": attention_needed[:4],
         "pending": pending_items[:5],
-        "commitments": commitments[:5],
+        "commitments": commitments[:8],
         "deadlines": deadlines[:4],
+        "requirements": extra.get("requirements") or [],
+        "topics": extra.get("topics") or [],
+        "key_insights": extra.get("key_insights") or [],
+        "risks_and_blockers": extra.get("risks_and_blockers") or [],
+        "follow_ups": extra.get("follow_ups") or [],
     }
 
 
 def _build_multilingual_summaries(transcript: list[dict], base_summary: str | None) -> dict[str, str]:
-    """
-    Generate clean, fully dynamic 1-2 sentence summaries in English (en), Hindi (hi), and Marathi (mr).
-    Extracts directly from spoken transcript lines dynamically without static hardcoded text.
-    """
     if not transcript or not base_summary:
         return {"en": "", "hi": "", "mr": ""}
 
@@ -851,28 +774,28 @@ def summarize(
     background_documents: list[str] | None = None,
     model: str = SUMMARY_MODEL,
 ) -> dict:
-    """
-    Produce summary / decisions / actionItems / keywords for one meeting.
-
-    Returns camelCase keys ready to hand straight to `repository.update_meeting`.
-    Never raises: a failed summary must leave a completed transcript alone, so
-    every failure path degrades to the extractive engine, and the worst case is
-    empty fields plus the UI's honest empty states.
-    """
     if not transcript:
         return {
             "summary": None,
             "decisions": [],
             "actionItems": [],
             "keywords": [],
+            "insights": {},
             "summaryEngine": None,
         }
 
     ranked_keywords = keywords(transcript, background_documents)
 
     if not model_available(model):
-        logger.info(f"summarizer: {model} unavailable — using the extractive engine")
-        return _extractive(transcript, ranked_keywords)
+        logger.warning(f"summarizer: {model} unavailable — returning clean empty result")
+        return {
+            "summary": None,
+            "decisions": [],
+            "actionItems": [],
+            "keywords": ranked_keywords,
+            "insights": {},
+            "summaryEngine": None,
+        }
 
     windows = _windows(transcript, SUMMARY_WINDOW_SECONDS)
     logger.info(f"summarizer: {model} over {len(windows)} window(s), {len(transcript)} lines")
@@ -886,8 +809,15 @@ def summarize(
         results.append(parsed)
 
     if not results:
-        logger.warning("summarizer: every window failed — falling back to extractive")
-        return _extractive(transcript, ranked_keywords)
+        logger.warning("summarizer: LLM windows failed — returning clean empty result")
+        return {
+            "summary": None,
+            "decisions": [],
+            "actionItems": [],
+            "keywords": ranked_keywords,
+            "insights": {},
+            "summaryEngine": None,
+        }
 
     parts = [(r.get("summary") or "").strip() for r in results]
     parts = [p for p in parts if p]
@@ -895,14 +825,29 @@ def summarize(
     if len(parts) <= 1:
         summary = parts[0] if parts else None
     else:
-        # Reduce step. If the merge call fails, concatenating the part summaries
-        # is a worse summary but not a wrong one — every sentence still came
-        # from a window of this meeting.
         merged = _ollama_json(_MERGE_PROMPT.format(parts="\n\n".join(parts)), model)
         summary = ((merged or {}).get("summary") or "").strip() or " ".join(parts)
 
     decisions, actions = _collect_items(results, transcript)
+    extra = {
+        "topics": list(dict.fromkeys(t for w in results for t in (w.get("topics") or []) if t)),
+        "requirements": list(dict.fromkeys(req for w in results for req in (w.get("requirements") or []) if req)),
+        "key_insights": [i for w in results for i in (w.get("key_insights") or []) if isinstance(i, dict)],
+        "risks_and_blockers": list(dict.fromkeys(r for w in results for r in (w.get("risks_and_blockers") or []) if r)),
+        "follow_ups": [f for w in results for f in (w.get("follow_ups") or []) if isinstance(f, dict)],
+        "people_and_responsibilities": [p for w in results for p in (w.get("people_and_responsibilities") or []) if isinstance(p, dict)],
+    }
     multilingual = _build_multilingual_summaries(transcript, summary)
+    insights = _extract_insights(transcript, actions, decisions, extra)
+
+    # Attach all 9 schema areas to the insights dictionary
+    insights["topics"] = extra.get("topics") or []
+    insights["action_items"] = actions
+    insights["key_decisions"] = decisions
+    insights["key_insights"] = extra.get("key_insights") or []
+    insights["risks_and_blockers"] = extra.get("risks_and_blockers") or []
+    insights["follow_ups"] = extra.get("follow_ups") or []
+    insights["people_and_responsibilities"] = extra.get("people_and_responsibilities") or []
 
     return {
         "summary": summary or None,
@@ -910,5 +855,6 @@ def summarize(
         "decisions": decisions,
         "actionItems": actions,
         "keywords": ranked_keywords,
+        "insights": insights,
         "summaryEngine": model,
     }

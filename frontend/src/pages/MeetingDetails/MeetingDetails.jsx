@@ -120,8 +120,13 @@ function getSpeakerColor(name, speakerStats = []) {
 
 function resolveSpeakerDisplayName(rawName, speakerStats = []) {
   if (!rawName) return 'Speaker_00'
-  const clean = String(rawName).trim()
+  const str = String(rawName).trim()
+  if (str.includes('+') || str.includes('&')) {
+    const parts = str.split(/\s*(?:\+|\&)\s*/).filter(Boolean)
+    return parts.map((p) => resolveSpeakerDisplayName(p, speakerStats)).join(' + ')
+  }
 
+  const clean = str
   const statMatch = speakerStats?.find(
     (s) => (s.speaker_label && s.speaker_label.toLowerCase() === clean.toLowerCase()) ||
            (s.name && s.name.toLowerCase() === clean.toLowerCase())

@@ -494,11 +494,35 @@ def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None
         if meeting is None:
             return None
 
-        session.execute(
-            TranscriptLine.__table__.update()
-            .where(TranscriptLine.meeting_id == meeting_id, TranscriptLine.speaker == old_name)
-            .values(speaker=new_name)
-        )
+        lines = session.scalars(
+            select(TranscriptLine).where(TranscriptLine.meeting_id == meeting_id)
+        ).all()
+        for line in lines:
+            if line.speaker:
+                parts = [p.strip() for p in line.speaker.split("+")]
+                if old_name in parts:
+                    new_parts = [new_name if p == old_name else p for p in parts]
+                    line.speaker = " + ".join(new_parts)
+            if line.candidate_speakers:
+                try:
+                    cands = json.loads(line.candidate_speakers)
+                    if isinstance(cands, list) and old_name in cands:
+                        line.candidate_speakers = json.dumps([new_name if c == old_name else c for c in cands])
+                except Exception:
+                    pass
+            if line.attributed_spans:
+                try:
+                    spans = json.loads(line.attributed_spans)
+                    if isinstance(spans, list):
+                        modified = False
+                        for s in spans:
+                            if isinstance(s, dict) and s.get("speaker") == old_name:
+                                s["speaker"] = new_name
+                                modified = True
+                        if modified:
+                            line.attributed_spans = json.dumps(spans)
+                except Exception:
+                    pass
 
         old_stat = session.scalars(
             select(SpeakerStat).where(

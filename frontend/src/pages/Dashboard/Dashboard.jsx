@@ -5,6 +5,8 @@ import EmptyState from '../../components/common/EmptyState.jsx'
 import StatCard from '../../components/cards/StatCard.jsx'
 import WeeklyChart from '../../components/charts/WeeklyChart.jsx'
 import SpeakerPie from '../../components/charts/SpeakerPie.jsx'
+import CategoryPie from '../../components/charts/CategoryPie.jsx'
+import DepartmentChart from '../../components/charts/DepartmentChart.jsx'
 import { useMeetings } from '../../context/MeetingsContext.jsx'
 import { useMembers } from '../../context/MembersContext.jsx'
 import { useUser } from '../../context/UserContext.jsx'
@@ -26,6 +28,7 @@ const STATUS_STYLE = {
 function MeetingRow({ meeting }) {
   const style = STATUS_STYLE[meeting.status] || STATUS_STYLE.Completed
   const processing = meeting.status === 'Processing'
+  const isInternal = meeting.meetingType === 'internal' || !meeting.meetingType
 
   return (
     <Link
@@ -44,10 +47,25 @@ function MeetingRow({ meeting }) {
           <p className="font-sidebar-header text-[15px] text-text-primary group-hover:text-primary transition-colors truncate">
             {meeting.title}
           </p>
-          <p className="font-meta-data text-meta-data text-text-muted truncate">
-            {meeting.date} · {meeting.time}
-            {meeting.duration ? ` • ${meeting.duration}` : ''}
-          </p>
+          <div className="flex items-center gap-2 flex-wrap mt-0.5">
+            <span className="font-meta-data text-meta-data text-text-muted truncate">
+              {meeting.date} · {meeting.time}
+              {meeting.duration ? ` • ${meeting.duration}` : ''}
+            </span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${isInternal ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-purple-500/10 text-purple-400 border-purple-500/20'}`}>
+              {isInternal ? ' Internal' : 'Client'}
+            </span>
+            {meeting.department && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted border border-border">
+                {meeting.department}
+              </span>
+            )}
+            {meeting.projectName && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-faint border border-border">
+                {meeting.projectName}
+              </span>
+            )}
+          </div>
         </div>
       </div>
       <div
@@ -144,21 +162,7 @@ export default function Dashboard() {
   }, [meetings])
 
   // Counts are summed across meetings, not recomputed here. The backend counts
-  // each word's real occurrences in the transcript, so a tag's number is a fact;
-  // inventing or rescaling it client-side would break that. Empty until at
-  // least one meeting has been summarized.
-  const topKeywords = useMemo(() => {
-    const totals = {}
-    meetings.forEach((m) => {
-      ;(m.keywords || []).forEach((k) => {
-        totals[k.word] = (totals[k.word] || 0) + (k.count || 0)
-      })
-    })
-    return Object.entries(totals)
-      .map(([word, count]) => ({ word, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10)
-  }, [meetings])
+
 
   const filteredRecentMeetings = useMemo(() => {
     let list = meetings
@@ -169,6 +173,19 @@ export default function Dashboard() {
       .sort((a, b) => new Date(b.uploadedAtISO) - new Date(a.uploadedAtISO))
       .slice(0, 5)
   }, [meetings, activeStatusFilter])
+
+  const categoryStats = useMemo(() => {
+    let internal = 0
+    let client = 0
+    const depts = {}
+    meetings.forEach((m) => {
+      if (m.meetingType === 'client') client++
+      else internal++
+      const dept = m.department || 'AI Team'
+      depts[dept] = (depts[dept] || 0) + 1
+    })
+    return { internal, client, depts }
+  }, [meetings])
 
   return (
     <div className="flex flex-col gap-5">
@@ -223,6 +240,41 @@ export default function Dashboard() {
           icon="groups"
           tint="primary"
         />
+      </div>
+
+      {/* Interactive Category & Department Analytics Charts Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 w-full">
+        {/* Category Distribution Donut Chart */}
+        <div className="bg-surface border border-border rounded-xl p-5 flex flex-col justify-between min-h-[220px]">
+          <div className="flex items-center justify-between pb-3 border-b border-border/40">
+            <h3 className="font-sidebar-header text-sidebar-header text-text-primary flex items-center gap-2">
+              <Icon name="pie_chart" size={18} className="text-primary" />
+              <span>Meeting Categories</span>
+            </h3>
+            <span className="font-meta-data text-[11px] text-text-muted bg-surface-raised px-2 py-0.5 rounded border border-border">
+              Internal vs Client
+            </span>
+          </div>
+          <div className="py-2 flex-1">
+            <CategoryPie meetings={meetings} />
+          </div>
+        </div>
+
+        {/* Department Volume Horizontal Bar Chart */}
+        <div className="bg-surface border border-border rounded-xl p-5 flex flex-col justify-between min-h-[220px]">
+          <div className="flex items-center justify-between pb-3 border-b border-border/40">
+            <h3 className="font-sidebar-header text-sidebar-header text-text-primary flex items-center gap-2">
+              <Icon name="bar_chart" size={18} className="text-primary" />
+              <span>Department Breakdown</span>
+            </h3>
+            <span className="font-meta-data text-[11px] text-text-muted bg-surface-raised px-2 py-0.5 rounded border border-border">
+              Volume by Dept
+            </span>
+          </div>
+          <div className="py-2 flex-1">
+            <DepartmentChart meetings={meetings} />
+          </div>
+        </div>
       </div>
 
       {/* Side-by-Side Grid Layout: Meeting Activity Chart (Left) + Recent Meetings (Right) */}

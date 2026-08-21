@@ -51,7 +51,7 @@ export default function Navbar() {
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search meetings, keywords, people..."
+          placeholder="Search meetings, topics, people..."
           className="w-full pl-10 pr-4 py-2 rounded-lg border border-border bg-surface-raised text-text-primary placeholder:text-text-faint font-meta-data text-meta-data focus:outline-none focus:border-primary-container transition-colors"
         />
       </form>

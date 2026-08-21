@@ -635,6 +635,19 @@ export default function MeetingDetails() {
             </div>
 
             <div className="flex flex-wrap items-center gap-2 mt-3 font-meta-data text-meta-data text-text-muted">
+              <span className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${meeting.meetingType === 'client' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
+                {meeting.meetingType === 'client' ? 'Client Meeting' : ' Internal Meeting'}
+              </span>
+              {meeting.department && (
+                <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-surface-raised text-text-muted border border-border">
+                  🏢 {meeting.department}
+                </span>
+              )}
+              {meeting.projectName && (
+                <span className="px-2.5 py-1 rounded-full text-xs font-medium bg-surface-raised text-text-faint border border-border">
+                  {meeting.meetingType === 'client' ? '💼 Client:' : '📁 Project:'} {meeting.projectName}
+                </span>
+              )}
               <MetaChip icon="calendar_today">{meeting.date}</MetaChip>
               <MetaChip icon="schedule">{meeting.duration || meeting.time}</MetaChip>
               {(() => {
@@ -1011,8 +1024,7 @@ export default function MeetingDetails() {
                 const hasInsights =
                   meeting.insights?.attentionNeeded?.length > 0 ||
                   meeting.insights?.pending?.length > 0 ||
-                  meeting.insights?.commitments?.length > 0 ||
-                  meeting.keywords?.length > 0
+                  meeting.insights?.commitments?.length > 0
 
                 if (!hasInsights) {
                   return (
@@ -1021,7 +1033,7 @@ export default function MeetingDetails() {
                       title="No insights generated"
                       subtitle={
                         processing
-                          ? 'Decisions, action items and keywords are extracted once transcription finishes.'
+                          ? 'Decisions and action items are extracted once transcription finishes.'
                           : "The summarization pass found nothing here — either no local model was reachable, or nothing it proposed could be verified against the transcript. This panel stays empty rather than showing invented content."
                       }
                     />
@@ -1148,24 +1160,6 @@ export default function MeetingDetails() {
                     )}
                       </div>
                     )}
-
-                    <InsightSection icon="key" iconClass="text-primary" title="Keywords">
-                      {meeting.keywords?.length > 0 ? (
-                        <div className="flex flex-wrap gap-2">
-                          {meeting.keywords.map((k) => (
-                            <span
-                              key={k.word}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-raised border border-border font-meta-data text-meta-data text-text-muted"
-                            >
-                              {k.word}
-                              <span className="text-text-faint">{k.count}</span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <NotGenerated what="Keyword extraction" />
-                      )}
-                    </InsightSection>
                   </div>
                 )
               })()}

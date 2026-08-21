@@ -279,8 +279,10 @@ export default function AudioPlayer({
 
   const seekToFraction = (fraction) => {
     const audio = audioRef.current
-    if (!audio || !duration) return
-    const t = Math.min(Math.max(fraction, 0), 1) * duration
+    if (!audio) return
+    const dur = duration || audio.duration || 0
+    if (!dur) return
+    const t = Math.min(Math.max(fraction, 0), 1) * dur
     audio.currentTime = t
     setCurrent(t)
   }
@@ -342,22 +344,25 @@ export default function AudioPlayer({
         </button>
 
         <div
-          role="slider"
-          tabIndex={0}
-          aria-label="Seek"
-          aria-valuemin={0}
-          aria-valuemax={Math.round(duration)}
-          aria-valuenow={Math.round(current)}
-          onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect()
-            seekToFraction((e.clientX - rect.left) / rect.width)
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'ArrowRight') seekToFraction(progress + 0.02)
-            if (e.key === 'ArrowLeft') seekToFraction(progress - 0.02)
-          }}
-          className="flex-1 flex items-center gap-1 h-10 cursor-pointer min-w-0"
+          className="relative flex-1 flex items-center gap-1 h-10 cursor-pointer min-w-0 select-none group"
         >
+          <input
+            type="range"
+            min={0}
+            max={duration || (audioRef.current?.duration || 100)}
+            step={0.1}
+            value={current}
+            onChange={(e) => {
+              const val = parseFloat(e.target.value)
+              if (audioRef.current) {
+                audioRef.current.currentTime = val
+              }
+              setCurrent(val)
+            }}
+            aria-label="Seek audio timeline"
+            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-30"
+          />
+
           {heights.map((h, i) => (
             <div
               key={i}
@@ -367,6 +372,12 @@ export default function AudioPlayer({
               style={{ height: `${h}%` }}
             />
           ))}
+
+          {/* Sliding Orange Thumb Handle */}
+          <div
+            className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-primary-container border-2 border-surface shadow-md pointer-events-none transition-transform group-hover:scale-125 z-20"
+            style={{ left: `calc(${progress * 100}% - 8px)` }}
+          />
         </div>
 
         <div className="font-meta-data text-meta-data text-text-muted whitespace-nowrap hidden sm:block">

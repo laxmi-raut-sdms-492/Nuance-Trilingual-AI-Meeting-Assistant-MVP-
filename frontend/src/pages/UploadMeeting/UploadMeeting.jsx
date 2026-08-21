@@ -228,7 +228,7 @@ export default function UploadMeeting() {
                   }`}
                 >
                   <Icon name="groups" className="text-lg" />
-                  <span>👥 Internal Meeting</span>
+                  <span> Internal Meeting</span>
                 </button>
                 <button
                   type="button"
@@ -240,7 +240,7 @@ export default function UploadMeeting() {
                   }`}
                 >
                   <Icon name="handshake" className="text-lg" />
-                  <span>🤝 Client Meeting</span>
+                  <span>Client Meeting</span>
                 </button>
               </div>
             </div>
@@ -260,13 +260,13 @@ export default function UploadMeeting() {
                   onChange={(e) => setDepartment(e.target.value)}
                   className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body bg-surface text-text-primary transition-colors cursor-pointer"
                 >
-                  <option value="AI Team">🤖 AI Team</option>
-                  <option value="Software">💻 Software Engineering</option>
-                  <option value="QA">🧪 QA & Testing</option>
-                  <option value="Product & Design">🎨 Product & Design</option>
-                  <option value="Management">📊 Management</option>
-                  <option value="Sales & Marketing">🚀 Sales & Marketing</option>
-                  <option value="Other">📁 Other</option>
+                  <option value="AI Team"> AI Team</option>
+                  <option value="Software"> Software Engineering</option>
+                  <option value="QA"> QA & Testing</option>
+                  <option value="Product & Design"> Product & Design</option>
+                  <option value="Management"> Management</option>
+                  <option value="Sales & Marketing"> Sales & Marketing</option>
+                  <option value="Other"> Other</option>
                 </select>
               </div>
 

@@ -540,7 +540,7 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
             # Rule: Filter out non-decision hypotheticals & conversational fillers
             if any(marker in lowered for marker in hypothetical_markers) or lowered in filler_decisions:
                 continue
-            if len(text.split()) < 4 and not any(k in lowered for k in ("budget", "marketing", "system", "plan", "decide", "agree", "policy", "approve")):
+            if len(text.split()) < 2 and not any(k in lowered for k in ("budget", "marketing", "system", "plan", "decide", "agree", "policy", "approve", "postpone", "postponed", "launch")):
                 continue
 
             quote = (decision.get("quote") or "").strip()
@@ -589,15 +589,15 @@ def _collect_items(raw_windows: list[dict], transcript: list[dict]) -> tuple[lis
             raw_owner = (action.get("owner") or action.get("assignee") or "").strip()
             owner_norm = raw_owner.lower()
             if owner_norm in ("i", "me", "my", "myself") and source:
-                assignee = _display_name(source) or "Unassigned"
+                assignee = _display_name(source) or None
             elif owner_norm in ("null", "none", "unassigned", "", "unknown"):
-                assignee = "Unassigned"
+                assignee = None
             else:
                 verified = _verify_assignee(raw_owner, names, spoken)
-                assignee = verified if verified else (raw_owner if raw_owner and len(raw_owner) >= 2 else "Unassigned")
+                assignee = verified if verified else None
 
             raw_due = (action.get("deadline") or action.get("due") or "").strip()
-            due = raw_due if raw_due and raw_due.lower() not in ("null", "none", "not specified", "unspecified", "") else "Not specified"
+            due = raw_due if raw_due and raw_due.lower() not in ("null", "none", "not specified", "unspecified", "") else None
 
             # Rule 8: Prevent duplicate action items by normalizing title + assignee
             key = _normalize(f"{task}:{assignee}")
@@ -766,7 +766,23 @@ def _build_multilingual_summaries(transcript: list[dict], base_summary: str | No
     }
 
 
-# -------------------------------------------------------------- entry point
+def _extract_summary_text(res_dict: dict) -> str:
+    if not isinstance(res_dict, dict):
+        return ""
+    raw = res_dict.get("summary") or res_dict.get("Summary") or ""
+    if isinstance(raw, dict):
+        topic = raw.get("Topic") or raw.get("topic") or ""
+        points = raw.get("Key Points") or raw.get("key_points") or raw.get("points") or raw.get("Action Items") or []
+        if isinstance(points, list):
+            points_str = " ".join(str(x) for x in points)
+        else:
+            points_str = str(points)
+        if topic and points_str:
+            return f"{topic}: {points_str}"
+        return points_str or str(raw)
+    elif isinstance(raw, list):
+        return " ".join(str(x) for x in raw)
+    return str(raw).strip()
 
 
 def summarize(
@@ -819,14 +835,14 @@ def summarize(
             "summaryEngine": None,
         }
 
-    parts = [(r.get("summary") or "").strip() for r in results]
+    parts = [_extract_summary_text(r) for r in results]
     parts = [p for p in parts if p]
 
     if len(parts) <= 1:
         summary = parts[0] if parts else None
     else:
         merged = _ollama_json(_MERGE_PROMPT.format(parts="\n\n".join(parts)), model)
-        summary = ((merged or {}).get("summary") or "").strip() or " ".join(parts)
+        summary = _extract_summary_text(merged or {}) or " ".join(parts)
 
     decisions, actions = _collect_items(results, transcript)
     extra = {

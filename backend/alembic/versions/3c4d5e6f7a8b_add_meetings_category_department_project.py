@@ -9,15 +9,16 @@ from alembic import op
 import sqlalchemy as sa
 
 revision = "3c4d5e6f7a8b"
-down_revision = "86b638adffce"
+down_revision = "h2b3c4d5e6f8"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("meetings", sa.Column("meeting_type", sa.String(length=32), nullable=True, server_default="internal"))
-    op.add_column("meetings", sa.Column("department", sa.String(length=64), nullable=True, server_default="AI Team"))
-    op.add_column("meetings", sa.Column("project_name", sa.String(length=128), nullable=True, server_default=""))
+    conn = op.get_bind()
+    conn.execute(sa.text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_type VARCHAR(32) DEFAULT 'internal'"))
+    conn.execute(sa.text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS department VARCHAR(64) DEFAULT 'AI Team'"))
+    conn.execute(sa.text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS project_name VARCHAR(128) DEFAULT ''"))
 
 
 def downgrade() -> None:

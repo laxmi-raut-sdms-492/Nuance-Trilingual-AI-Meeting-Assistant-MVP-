@@ -352,13 +352,13 @@ export default function MeetingList({ filter }) {
                 className="bg-surface-raised border border-border px-3 py-2 rounded-lg font-meta-data text-xs text-text-primary focus:outline-none cursor-pointer"
               >
                 <option value="all">All Departments</option>
-                <option value="AI Team">🤖 AI Team</option>
-                <option value="Software">💻 Software</option>
-                <option value="QA">🧪 QA & Testing</option>
-                <option value="Product & Design">🎨 Product & Design</option>
-                <option value="Management">📊 Management</option>
-                <option value="Sales & Marketing">🚀 Sales & Marketing</option>
-                <option value="Other">📁 Other</option>
+                <option value="AI Team"> AI Team</option>
+                <option value="Software"> Software</option>
+                <option value="QA"> QA & Testing</option>
+                <option value="Product & Design"> Product & Design</option>
+                <option value="Management"> Management</option>
+                <option value="Sales & Marketing"> Sales & Marketing</option>
+                <option value="Other"> Other</option>
               </select>
             </div>
           </div>

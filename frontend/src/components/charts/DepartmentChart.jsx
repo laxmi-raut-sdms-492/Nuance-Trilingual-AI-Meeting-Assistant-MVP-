@@ -1,12 +1,12 @@
 import { useMemo } from 'react'
 
 const DEPT_ICONS = {
-  'AI Team': '🤖',
-  'Software': '💻',
-  'QA': '🧪',
-  'Product & Design': '🎨',
-  'Management': '📊',
-  'Sales & Marketing': '🚀',
+  'AI Team': '',
+  'Software': '',
+  'QA': '',
+  'Product & Design': '',
+  'Management': '',
+  'Sales & Marketing': '',
 }
 
 const BAR_COLORS = [
@@ -44,7 +44,7 @@ export default function DepartmentChart({ meetings = [] }) {
     <div className="flex flex-col gap-3 py-1">
       {depts.slice(0, 5).map((d, idx) => {
         const pct = Math.round((d.value / maxVal) * 100)
-        const icon = DEPT_ICONS[d.name] || '📁'
+        const icon = DEPT_ICONS[d.name] || ''
         const barColor = BAR_COLORS[idx % BAR_COLORS.length]
 
         return (

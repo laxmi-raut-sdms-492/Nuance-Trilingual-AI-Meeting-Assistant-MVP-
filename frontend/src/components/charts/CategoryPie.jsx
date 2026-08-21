@@ -15,8 +15,8 @@ export default function CategoryPie({ meetings = [] }) {
       else internal++
     })
     return [
-      { name: 'Internal', value: internal, color: COLOR_INTERNAL, icon: '👥' },
-      { name: 'Client', value: client, color: COLOR_CLIENT, icon: '🤝' },
+      { name: 'Internal', value: internal, color: COLOR_INTERNAL},
+      { name: 'Client', value: client, color: COLOR_CLIENT},
     ]
   }, [meetings])
 

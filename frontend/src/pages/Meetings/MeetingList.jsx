@@ -116,6 +116,8 @@ export default function MeetingList({ filter }) {
   const [results, setResults] = useState(null)
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState(null)
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  const [departmentFilter, setDepartmentFilter] = useState('all')
   const searchSeq = useRef(0)
 
   // Keep the search box in sync if the user searches again from the Navbar.
@@ -188,9 +190,25 @@ export default function MeetingList({ filter }) {
       ? results.map((r) => byId.get(r.id) || { ...r, date: '—', time: '—', fileSizeLabel: '—' })
       : meetings
 
-  const filtered = statusParam
-    ? rawFiltered.filter((m) => m.status?.toLowerCase() === statusParam.toLowerCase())
-    : rawFiltered
+  const filtered = useMemo(() => {
+    let list = rawFiltered
+    if (statusParam) {
+      list = list.filter((m) => m.status?.toLowerCase() === statusParam.toLowerCase())
+    }
+    if (categoryFilter !== 'all') {
+      list = list.filter((m) => {
+        const type = m.meetingType || 'internal'
+        return type.toLowerCase() === categoryFilter.toLowerCase()
+      })
+    }
+    if (departmentFilter !== 'all') {
+      list = list.filter((m) => {
+        const dept = m.department || 'AI Team'
+        return dept.toLowerCase() === departmentFilter.toLowerCase()
+      })
+    }
+    return list
+  }, [rawFiltered, statusParam, categoryFilter, departmentFilter])
 
   const listLoading = isTrash ? trashLoading : loading
   const listError = isTrash ? trashError : error
@@ -285,8 +303,8 @@ export default function MeetingList({ filter }) {
 
       <div className="bg-surface border border-border rounded-xl overflow-hidden">
         {!isTrash && (
-          <div className="p-4 border-b border-border">
-            <div className="relative max-w-sm">
+          <div className="p-4 border-b border-border flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 flex-wrap">
+            <div className="relative max-w-sm flex-1">
               <Icon
                 name="search"
                 size={18}
@@ -309,6 +327,39 @@ export default function MeetingList({ filter }) {
                   className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted animate-spin pointer-events-none"
                 />
               )}
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                value={categoryFilter}
+                onChange={(e) => {
+                  setCategoryFilter(e.target.value)
+                  setPage(1)
+                }}
+                className="bg-surface-raised border border-border px-3 py-2 rounded-lg font-meta-data text-xs text-text-primary focus:outline-none cursor-pointer"
+              >
+                <option value="all">All Categories</option>
+                <option value="internal">👥 Internal Meetings</option>
+                <option value="client">🤝 Client Meetings</option>
+              </select>
+
+              <select
+                value={departmentFilter}
+                onChange={(e) => {
+                  setDepartmentFilter(e.target.value)
+                  setPage(1)
+                }}
+                className="bg-surface-raised border border-border px-3 py-2 rounded-lg font-meta-data text-xs text-text-primary focus:outline-none cursor-pointer"
+              >
+                <option value="all">All Departments</option>
+                <option value="AI Team">🤖 AI Team</option>
+                <option value="Software">💻 Software</option>
+                <option value="QA">🧪 QA & Testing</option>
+                <option value="Product & Design">🎨 Product & Design</option>
+                <option value="Management">📊 Management</option>
+                <option value="Sales & Marketing">🚀 Sales & Marketing</option>
+                <option value="Other">📁 Other</option>
+              </select>
             </div>
           </div>
         )}
@@ -372,16 +423,45 @@ export default function MeetingList({ filter }) {
                     <tr key={m.id} className="hover:bg-surface-raised transition-colors group">
                       <td className="p-4 align-top">
                         {isTrash ? (
-                          <div className="flex items-center gap-3">
-                            <Icon name="graphic_eq" className="text-text-muted" />
-                            <span className="text-text-primary font-medium">{m.title}</span>
+                          <div className="flex items-start gap-3">
+                            <Icon name="graphic_eq" className="text-text-muted mt-0.5" />
+                            <div>
+                              <span className="text-text-primary font-medium">{m.title}</span>
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${m.meetingType === 'client' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
+                                  {m.meetingType === 'client' ? '🤝 Client' : '👥 Internal'}
+                                </span>
+                                {m.department && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted border border-border">
+                                    {m.department}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
                         ) : (
-                          <Link to={`/meetings/${m.id}`} className="flex items-center gap-3">
-                            <Icon name="graphic_eq" className="text-text-muted" />
-                            <span className="text-text-primary font-medium hover:text-primary transition-colors">
-                              {m.title}
-                            </span>
+                          <Link to={`/meetings/${m.id}`} className="flex items-start gap-3">
+                            <Icon name="graphic_eq" className="text-text-muted mt-0.5" />
+                            <div>
+                              <span className="text-text-primary font-medium hover:text-primary transition-colors">
+                                {m.title}
+                              </span>
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${m.meetingType === 'client' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
+                                  {m.meetingType === 'client' ? '🤝 Client' : '👥 Internal'}
+                                </span>
+                                {m.department && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted border border-border">
+                                    {m.department}
+                                  </span>
+                                )}
+                                {m.projectName && (
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-faint border border-border">
+                                    {m.projectName}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </Link>
                         )}
                         <MatchSnippets result={matchById?.get(m.id)} needle={term} />

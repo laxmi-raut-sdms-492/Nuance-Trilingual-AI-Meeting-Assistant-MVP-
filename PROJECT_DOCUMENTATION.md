@@ -198,3 +198,71 @@ cd backend
 - **Project**: Nuance Trilingual AI Meeting Assistant (MVP)
 - **Version**: 1.0.0
 - **Status**: Verified & Operational
+
+
+
+# 🌟 Core Features & Accomplishments
+
+### 1. 🌐 Trilingual Speech-to-Text (STT) & Language Detection
+- **Multi-Language Support**: Seamlessly processes **English, Marathi, Hindi**, and **Code-Switched / Mixed speech** (e.g. Hinglish / Marathlish).
+- **Dual Processing Engine**:
+  - **Local Processing**: Privacy-focused Whisper & Indic Conformer models running locally.
+  - **Cloud Processing**: High-accuracy Sarvam AI integration.
+- **Language Breakdown**: Calculates and displays exact speaking percentages per language (e.g. *88% Marathi, 10% English, 2% Hindi*).
+
+---
+
+### 2. 👥 Speaker Diarization & Voice Identification
+- **Voice Profile Enrollment**: Register known team members by uploading a short voice sample.
+- **Automatic Speaker Identification**: Automatically recognizes enrolled team members (e.g., *Yashraj, Siddesh, Mandar, Vaishnavi*) in audio files.
+- **Overlapping Speech & Cross-Talk Attribution**: Uses SepFormer source separation to split overlapping voices into clear attributed speech chips.
+- **Universal Speaker Renaming**: Renaming a speaker label (e.g. `Speaker_00` ➔ `Siddesh`) instantly cascades across transcript lines, composite overlap headers (`Yashraj + Siddesh`), and speaking time bars.
+
+---
+
+### 3. 🧠 AI Meeting Intelligence (Powered by Qwen2.5:7b)
+- **Automated Summary**: Generates concise, structured summaries covering key discussion points.
+- **Action Items & Commitments**: Extracts task titles, assignees, due dates, and verbatim transcript quotes.
+- **Key Decisions**: Highlights formal agreements made during the meeting.
+- **Structured Insights**: Automatically extracts 12 analytical insights:
+  - ⏳ **Pending & Unresolved Items** *(clean single-line tracking with owner assignment)*
+  - ⚠️ **Attention Needed**
+  - 🎯 **Commitments & Deadlines**
+  - 🛑 **Risks & Blockers**
+  - 🔄 **Follow-ups & Responsibilities**
+
+---
+
+### 4. 📊 Category & Department Analytics (Dashboard)
+- **Category Classification**: Distinguishes between **👥 Internal Meetings** and **🤝 Client Meetings**.
+- **Department Tagging**: Groups meetings into **🤖 AI Team**, **💻 Software Engineering**, **🧪 QA & Testing**, **🎨 Product & Design**, **📊 Management**, and **🚀 Sales & Marketing**.
+- **Project & Client Tracking**: Displays Project Names for internal meetings and Client/Account names for client meetings.
+- **Interactive Analytics Charts**:
+  - 🍩 **Category Donut Chart** (`CategoryPie`): Interactive ratio of Internal vs Client meetings.
+  - 📊 **Department Volume Chart** (`DepartmentChart`): Horizontal progress bar chart tracking meeting distribution.
+
+---
+
+### 5. 🔍 High-Performance Search & Filtering
+- **Server-Side Full-Text Search**: Searches across titles, agendas, and transcript lines in all 3 languages.
+- **Match Snippets & Highlighting**: Displays exact matching transcript lines with highlighted query terms.
+- **Multi-Level Filters**: Filter meetings by **Status** (*Completed, Processing, Failed*), **Category** (*Internal vs Client*), or **Department**.
+
+---
+
+### 6. 🗑️ Meeting Lifecycle & Trash Management
+- **Soft Delete to Trash**: Move meetings to Trash with 1-click restore functionality.
+- **Permanent Purge & Clear All**: Hard delete unwanted recordings and transcripts permanently.
+
+---
+
+### 💡 Suggested Demo Flow for You:
+1. **Dashboard Overview**: Show the 4 Stat Cards, Category Donut Chart, and Department Volume Bar Chart.
+2. **All Meetings & Filtering**: Filter by `Client Meetings` or `Software Department` to demonstrate organization.
+3. **Upload Meeting**: Upload a new file, select **Client Meeting**, department, and agenda.
+4. **Meeting Details**:
+   - Point out the **Header Badges** (*Client Meeting*, *Department*, *Project*).
+   - Show **Speakers & Talk-Time Bar**.
+   - Demo **Overlapping Speech Chips**.
+   - Show **AI Summary & Action Items**.
+   - Click a speaker label to demonstrate **Instant Renaming**!

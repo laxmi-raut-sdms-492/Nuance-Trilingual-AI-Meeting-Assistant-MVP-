@@ -231,41 +231,9 @@ export default function AudioPlayer({
     setPlaying(false)
     setCurrent(0)
     setDuration(0)
-    setChecking(true)
+    setChecking(false)
     setHasAudio(Boolean(url))
-
-    if (!url) {
-      setChecking(false)
-      setHasAudio(false)
-      return
-    }
-
-    let cancelled = false
-    fetch(url, { method: 'HEAD' })
-      .then((res) => {
-        if (cancelled) return
-        setHasAudio(res.ok)
-        if (!res.ok) setFailed(true)
-      })
-      .catch(() => {
-        if (!cancelled) {
-          if (fileName) {
-            setHasAudio(true)
-            setFailed(false)
-          } else {
-            setHasAudio(false)
-            setFailed(true)
-          }
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setChecking(false)
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [meetingId, url, fileName, audioVersion])
+  }, [meetingId, url, audioVersion])
 
   useEffect(() => {
     if (audioRef.current) {
@@ -343,7 +311,10 @@ export default function AudioPlayer({
           }}
           onPause={() => setPlaying(false)}
           onEnded={() => setPlaying(false)}
-          onError={() => setFailed(true)}
+          onError={() => {
+            setFailed(true)
+            setHasAudio(false)
+          }}
         />
 
         <button

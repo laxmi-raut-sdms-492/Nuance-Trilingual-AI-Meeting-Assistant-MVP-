@@ -171,7 +171,7 @@ export default function Dashboard() {
     }
     return [...list]
       .sort((a, b) => new Date(b.uploadedAtISO) - new Date(a.uploadedAtISO))
-      .slice(0, 5)
+      .slice(0, 3)
   }, [meetings, activeStatusFilter])
 
   const categoryStats = useMemo(() => {

@@ -669,14 +669,21 @@ def get_meeting_audio(meeting_id: str, request: Request):
     path = store.audio_path(meeting_id)
     if path is None or not os.path.exists(path):
         raise HTTPException(404, "No audio stored for this meeting.")
+
+    import mimetypes
+    media_type, _ = mimetypes.guess_type(path)
+    if not media_type or media_type == "video/mp4":
+        media_type = "audio/mp4"
+
     if request.method == "HEAD":
         return Response(
             headers={
                 "Content-Length": str(os.path.getsize(path)),
                 "Accept-Ranges": "bytes",
+                "Content-Type": media_type,
             }
         )
-    return FileResponse(path, filename=os.path.basename(path))
+    return FileResponse(path, filename=os.path.basename(path), media_type=media_type)
 
 
 @router.post("/meetings/{meeting_id}/audio")

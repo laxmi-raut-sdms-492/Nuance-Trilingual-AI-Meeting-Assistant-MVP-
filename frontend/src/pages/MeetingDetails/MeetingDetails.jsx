@@ -1089,22 +1089,25 @@ export default function MeetingDetails() {
                         </div>
                         <p className="text-xs font-meta-data text-text-faint mb-4">Track things discussed that require follow-up resolution.</p>
                         <div className="flex flex-col gap-4">
-                          {meeting.insights.pending.map((p, idx) => (
-                            <div key={idx} className="flex flex-col gap-1.5 p-3.5 rounded-lg bg-surface-raised border border-border/60">
-                              <div className="flex items-center justify-between">
-                                <span className="font-semibold text-text-primary text-sm">{typeof p === 'string' ? p.slice(0, 40) : p.topic}</span>
-                                <span className="text-xs font-meta-data px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20">
-                                  {typeof p === 'string' ? 'Pending' : (p.status || 'Pending')}
-                                </span>
+                          {meeting.insights.pending.map((p, idx) => {
+                            const text = typeof p === 'string' ? p : (p.description || p.topic || '')
+                            const status = typeof p === 'string' ? 'Pending' : (p.status || 'Pending')
+                            const owner = typeof p === 'object' ? p.owner : null
+
+                            return (
+                              <div key={idx} className="flex flex-col gap-1.5 p-3.5 rounded-lg bg-surface-raised border border-border/60">
+                                <div className="flex items-start justify-between gap-3">
+                                  <span className="font-medium text-text-primary text-sm leading-relaxed">{text}</span>
+                                  <span className="text-xs font-meta-data px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 shrink-0">
+                                    {status}
+                                  </span>
+                                </div>
+                                {owner && (
+                                  <span className="text-xs text-text-faint mt-0.5">Owner: <strong className="text-text-muted">{owner}</strong></span>
+                                )}
                               </div>
-                              <p className="font-meta-data text-meta-data text-text-muted leading-relaxed">
-                                {typeof p === 'string' ? p : p.description}
-                              </p>
-                              {typeof p === 'object' && p.owner && (
-                                <span className="text-xs text-text-faint mt-1">Owner: <strong className="text-text-muted">{p.owner}</strong></span>
-                              )}
-                            </div>
-                          ))}
+                            )
+                          })}
                         </div>
                       </div>
                     ) : (

@@ -718,6 +718,7 @@ export default function MeetingDetails() {
         meetingId={meeting.id}
         fileName={meeting.fileName}
         transcript={meeting.transcript || []}
+        durationSeconds={meeting.durationSeconds}
         onImportAudio={handleImportAudio}
         importDisabled={processing}
         audioVersion={audioVersion}

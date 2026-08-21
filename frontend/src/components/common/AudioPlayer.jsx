@@ -169,6 +169,7 @@ export default function AudioPlayer({
   onImportAudio,
   importDisabled = false,
   audioVersion = 0,
+  durationSeconds = 0,
 }) {
   const audioRef = useRef(null)
   const speedMenuRef = useRef(null)
@@ -195,6 +196,19 @@ export default function AudioPlayer({
       }))
       .sort((a, b) => Number(a.start_sec) - Number(b.start_sec))
   }, [transcript])
+
+  const effectiveDuration = useMemo(() => {
+    if (duration && isFinite(duration) && duration > 0) return duration
+    if (durationSeconds && isFinite(durationSeconds) && durationSeconds > 0) return durationSeconds
+    if (audioRef.current && isFinite(audioRef.current.duration) && audioRef.current.duration > 0) {
+      return audioRef.current.duration
+    }
+    if (segments?.length > 0) {
+      const last = segments[segments.length - 1]
+      if (last && isFinite(Number(last.end_sec)) && Number(last.end_sec) > 0) return Number(last.end_sec)
+    }
+    return 0
+  }, [duration, durationSeconds, segments])
 
   const active = useMemo(() => speakerAtTime(segments, current), [segments, current])
 
@@ -279,10 +293,8 @@ export default function AudioPlayer({
 
   const seekToFraction = (fraction) => {
     const audio = audioRef.current
-    if (!audio) return
-    const dur = duration || audio.duration || 0
-    if (!dur) return
-    const t = Math.min(Math.max(fraction, 0), 1) * dur
+    if (!audio || !effectiveDuration) return
+    const t = Math.min(Math.max(fraction, 0), 1) * effectiveDuration
     audio.currentTime = t
     setCurrent(t)
   }
@@ -309,7 +321,7 @@ export default function AudioPlayer({
     )
   }
 
-  const progress = duration ? current / duration : 0
+  const progress = effectiveDuration > 0 ? Math.min(Math.max(current / effectiveDuration, 0), 1) : 0
   const playedBars = Math.round(progress * BAR_COUNT)
 
   return (
@@ -349,7 +361,7 @@ export default function AudioPlayer({
           <input
             type="range"
             min={0}
-            max={duration || (audioRef.current?.duration || 100)}
+            max={effectiveDuration || 1}
             step={0.1}
             value={current}
             onChange={(e) => {
@@ -381,7 +393,7 @@ export default function AudioPlayer({
         </div>
 
         <div className="font-meta-data text-meta-data text-text-muted whitespace-nowrap hidden sm:block">
-          {formatTime(current)} / {formatTime(duration)}
+          {formatTime(current)} / {formatTime(effectiveDuration)}
         </div>
 
         <a

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import Icon from '../../components/common/Icon.jsx'
@@ -339,8 +339,8 @@ export default function MeetingList({ filter }) {
                 className="bg-surface-raised border border-border px-3 py-2 rounded-lg font-meta-data text-xs text-text-primary focus:outline-none cursor-pointer"
               >
                 <option value="all">All Categories</option>
-                <option value="internal">👥 Internal Meetings</option>
-                <option value="client">🤝 Client Meetings</option>
+                <option value="internal"> Internal Meetings</option>
+                <option value="client">Client Meetings</option>
               </select>
 
               <select
@@ -429,7 +429,7 @@ export default function MeetingList({ filter }) {
                               <span className="text-text-primary font-medium">{m.title}</span>
                               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${m.meetingType === 'client' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
-                                  {m.meetingType === 'client' ? '🤝 Client' : '👥 Internal'}
+                                  {m.meetingType === 'client' ? 'Client' : ' Internal'}
                                 </span>
                                 {m.department && (
                                   <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted border border-border">
@@ -448,7 +448,7 @@ export default function MeetingList({ filter }) {
                               </span>
                               <div className="flex items-center gap-1.5 mt-1 flex-wrap">
                                 <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border ${m.meetingType === 'client' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-blue-500/10 text-blue-400 border-blue-500/20'}`}>
-                                  {m.meetingType === 'client' ? '🤝 Client' : '👥 Internal'}
+                                  {m.meetingType === 'client' ? 'Client' : ' Internal'}
                                 </span>
                                 {m.department && (
                                   <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-surface-raised text-text-muted border border-border">

@@ -176,6 +176,9 @@ def _to_dict(meeting: Meeting) -> dict:
         "processingMode": meeting.processing_mode or DEFAULT_PROCESSING_MODE,
         "sttProvider": meeting.stt_provider,
         "insights": meeting.insights,
+        "meetingType": meeting.meeting_type or "internal",
+        "department": meeting.department or "AI Team",
+        "projectName": meeting.project_name or "",
         "languages": [
             {"code": l.code, "name": l.name, "seconds": l.seconds, "pct": l.pct}
             for l in meeting.languages

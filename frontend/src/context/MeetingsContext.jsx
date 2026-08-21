@@ -16,6 +16,9 @@ export function normalizeMeeting(meeting) {
   const durationSeconds = Math.round(Number(meeting.durationSeconds) || 0)
   return {
     ...meeting,
+    meetingType: (meeting.meetingType || meeting.meeting_type || 'internal').toLowerCase(),
+    department: meeting.department || 'AI Team',
+    projectName: meeting.projectName || meeting.project_name || '',
     durationSeconds,
     date: uploadedAt
       ? uploadedAt.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })

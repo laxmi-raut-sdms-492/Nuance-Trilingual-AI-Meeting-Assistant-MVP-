@@ -456,24 +456,33 @@ def update_meeting(meeting_id: str, **updates) -> dict | None:
     move the progress bar, so it must not rewrite the transcript. Scalar-only
     updates touch a single row and never load the children.
     """
-    with session_scope() as session:
-        meeting = session.get(Meeting, meeting_id)
-        if meeting is None:
-            return None
+    import time
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            with session_scope() as session:
+                meeting = session.get(Meeting, meeting_id)
+                if meeting is None:
+                    return None
 
-        for camel, column in _MEETING_FIELDS.items():
-            if camel in updates:
-                val = updates[camel]
-                if val is None and column in _NON_NULLABLE_MEETING_DEFAULTS:
-                    val = _NON_NULLABLE_MEETING_DEFAULTS[column]
-                setattr(meeting, column, val)
+                for camel, column in _MEETING_FIELDS.items():
+                    if camel in updates:
+                        val = updates[camel]
+                        if val is None and column in _NON_NULLABLE_MEETING_DEFAULTS:
+                            val = _NON_NULLABLE_MEETING_DEFAULTS[column]
+                        setattr(meeting, column, val)
 
-        if "uploadedAtISO" in updates:
-            meeting.uploaded_at = _parse_iso(updates["uploadedAtISO"])
+                if "uploadedAtISO" in updates:
+                    meeting.uploaded_at = _parse_iso(updates["uploadedAtISO"])
 
-        _apply_children(session, meeting, updates)
-        session.flush()
-        return _to_dict(meeting)
+                _apply_children(session, meeting, updates)
+                session.flush()
+                return _to_dict(meeting)
+        except Exception as exc:
+            if "deadlock" in str(exc).lower() and attempt < max_retries - 1:
+                time.sleep(0.15 * (attempt + 1))
+                continue
+            raise
 
 
 def rename_speaker(meeting_id: str, old_name: str, new_name: str) -> dict | None:

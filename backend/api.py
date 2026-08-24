@@ -671,20 +671,20 @@ def get_meeting_audio(meeting_id: str, request: Request):
         raise HTTPException(404, "No audio stored for this meeting.")
 
     if path.endswith(".mp4"):
-        mp3_path = os.path.join(os.path.dirname(path), "audio.mp3")
-        if os.path.exists(mp3_path):
-            path = mp3_path
+        m4a_path = os.path.join(os.path.dirname(path), "audio.m4a")
+        if os.path.exists(m4a_path):
+            path = m4a_path
         else:
             try:
                 import subprocess
                 subprocess.run(
-                    ["ffmpeg", "-y", "-i", path, "-vn", "-ac", "2", "-ar", "44100", "-b:a", "128k", mp3_path],
+                    ["ffmpeg", "-y", "-i", path, "-vn", "-c:a", "copy", m4a_path],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
-                if os.path.exists(mp3_path):
-                    path = mp3_path
+                if os.path.exists(m4a_path):
+                    path = m4a_path
             except Exception:
                 pass
 

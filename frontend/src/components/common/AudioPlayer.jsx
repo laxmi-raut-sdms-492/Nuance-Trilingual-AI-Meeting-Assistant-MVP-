@@ -233,6 +233,14 @@ export default function AudioPlayer({
     setDuration(0)
     setChecking(false)
     setHasAudio(Boolean(url))
+
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.removeAttribute('src')
+        audioRef.current.load()
+      }
+    }
   }, [meetingId, url, audioVersion])
 
   useEffect(() => {
@@ -299,7 +307,7 @@ export default function AudioPlayer({
           key={`${meetingId}-${audioVersion}`}
           ref={audioRef}
           src={url}
-          preload="metadata"
+          preload="none"
           onLoadedMetadata={(e) => {
             setDuration(e.currentTarget.duration || 0)
             e.currentTarget.playbackRate = playbackSpeed

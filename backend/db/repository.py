@@ -946,9 +946,16 @@ def audio_path(meeting_id: str) -> str | None:
     directory = os.path.join(AUDIO_DIR, meeting_id)
     if not os.path.isdir(directory):
         return None
-    for name in os.listdir(directory):
-        return os.path.join(directory, name)
-    return None
+    files = os.listdir(directory)
+    if not files:
+        return None
+    for name in files:
+        if name.endswith('.mp3'):
+            return os.path.join(directory, name)
+    for name in files:
+        if name.endswith(('.wav', '.m4a', '.ogg', '.flac')):
+            return os.path.join(directory, name)
+    return os.path.join(directory, files[0])
 
 
 def clear_meeting_audio(meeting_id: str) -> None:

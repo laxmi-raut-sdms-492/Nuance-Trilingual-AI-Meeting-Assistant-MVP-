@@ -23,6 +23,7 @@ can be unit-tested without a database.
 import json
 import logging
 import re
+import threading
 
 import numpy as np
 from sqlalchemy import func, select
@@ -38,6 +39,7 @@ logger = logging.getLogger("identifier")
 class SpeakerIdentifier:
     def __init__(self, threshold: float = IDENTIFICATION_SIMILARITY_THRESHOLD):
         self.threshold = threshold
+        self._lock = threading.Lock()
         # name -> {"centroid": np.ndarray, "sample_count": int}
         self._cache: dict[str, dict] = {}
         self._cache_stamp = None
@@ -53,20 +55,21 @@ class SpeakerIdentifier:
 
     def refresh(self, force: bool = True):
         """Reload profiles from the database if they may have changed."""
-        with session_scope() as session:
-            stamp = self._current_stamp(session)
-            if not force and stamp == self._cache_stamp:
-                return
-            rows = session.scalars(select(Speaker)).all()
-            self._cache = {
-                row.name: {
-                    "centroid": np.array(json.loads(row.centroid), dtype=np.float32),
-                    "sample_count": row.sample_count,
+        with self._lock:
+            with session_scope() as session:
+                stamp = self._current_stamp(session)
+                if not force and stamp == self._cache_stamp:
+                    return
+                rows = session.scalars(select(Speaker)).all()
+                self._cache = {
+                    row.name: {
+                        "centroid": np.array(json.loads(row.centroid), dtype=np.float32),
+                        "sample_count": row.sample_count,
+                    }
+                    for row in rows
                 }
-                for row in rows
-            }
-            self._cache_stamp = stamp
-        logger.info(f"loaded {len(self._cache)} enrolled voice profile(s)")
+                self._cache_stamp = stamp
+            logger.info(f"loaded {len(self._cache)} enrolled voice profile(s)")
 
     @property
     def enrolled(self) -> dict[str, dict]:

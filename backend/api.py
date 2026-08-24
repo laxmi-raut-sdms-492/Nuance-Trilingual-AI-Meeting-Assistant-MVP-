@@ -670,10 +670,28 @@ def get_meeting_audio(meeting_id: str, request: Request):
     if path is None or not os.path.exists(path):
         raise HTTPException(404, "No audio stored for this meeting.")
 
+    if path.endswith(".mp4"):
+        mp3_path = os.path.join(os.path.dirname(path), "audio.mp3")
+        if os.path.exists(mp3_path):
+            path = mp3_path
+        else:
+            try:
+                import subprocess
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", path, "-vn", "-ac", "2", "-ar", "44100", "-b:a", "128k", mp3_path],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if os.path.exists(mp3_path):
+                    path = mp3_path
+            except Exception:
+                pass
+
     import mimetypes
     media_type, _ = mimetypes.guess_type(path)
-    if not media_type or media_type == "video/mp4":
-        media_type = "audio/mp4"
+    if not media_type or media_type == "video/mp4" or path.endswith(".mp3"):
+        media_type = "audio/mpeg"
 
     if request.method == "HEAD":
         return Response(

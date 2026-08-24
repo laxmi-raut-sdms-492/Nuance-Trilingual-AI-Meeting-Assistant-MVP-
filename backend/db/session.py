@@ -36,8 +36,8 @@ def get_engine() -> Engine:
             # Transcription is serialized and the API is light, so a large pool
             # buys nothing. Keep it small enough not to exhaust Postgres'
             # default 100 connections if several processes are ever run.
-            pool_size=5,
-            max_overflow=5,
+            pool_size=20,
+            max_overflow=20,
             pool_recycle=1800,
             future=True,
         )

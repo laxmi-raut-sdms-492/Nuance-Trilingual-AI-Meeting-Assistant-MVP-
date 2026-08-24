@@ -54,7 +54,7 @@ free_port() {
     local cmd
     cmd="$(ps -o comm= -p "$pid" 2>/dev/null || echo '?')"
     warn "port ${port} (${label}) held by pid ${pid} (${cmd}) — killing"
-    kill "$pid" 2>/dev/null || true
+    kill -9 "$pid" 2>/dev/null || true
   done
 
   # give them a moment to exit cleanly, then escalate
@@ -227,10 +227,16 @@ start_frontend() {
   PIDS+=("$!")
 }
 
+clean_old_instances() {
+  pkill -9 -f "uvicorn main:app" 2>/dev/null || true
+  pkill -9 -f "vite --port" 2>/dev/null || true
+}
+
 # ---------- main ----------
 
 mkdir -p "$LOG_DIR"
 check_prereqs
+clean_old_instances
 
 [ "$RUN_BACKEND"  = 1 ] && free_port "$BACKEND_PORT"  "backend"
 [ "$RUN_FRONTEND" = 1 ] && free_port "$FRONTEND_PORT" "frontend"
@@ -248,7 +254,13 @@ log "up and running — Ctrl-C to stop both"
 echo "    logs      tail -f logs/*.log"
 echo
 
-# if either service dies, tear the other one down instead of hanging forever
-wait -n || true
-warn "a service exited — check logs/ for why"
-shutdown
+# Monitor main service PIDs — only trigger shutdown if uvicorn or vite actually dies
+while true; do
+  for pid in "${PIDS[@]}"; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      warn "a service (PID $pid) exited — check logs/ for why"
+      shutdown
+    fi
+  done
+  sleep 2
+done

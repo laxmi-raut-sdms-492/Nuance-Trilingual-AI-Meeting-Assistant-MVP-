@@ -30,7 +30,7 @@ export default function DepartmentChart({ meetings = [] }) {
       .sort((a, b) => b.value - a.value)
   }, [meetings])
 
-  const maxVal = useMemo(() => Math.max(1, ...depts.map((d) => d.value)), [depts])
+  const totalCount = useMemo(() => depts.reduce((sum, d) => sum + d.value, 0), [depts])
 
   if (!depts.length) {
     return (
@@ -43,7 +43,7 @@ export default function DepartmentChart({ meetings = [] }) {
   return (
     <div className="flex flex-col gap-3 py-1">
       {depts.slice(0, 5).map((d, idx) => {
-        const pct = Math.round((d.value / maxVal) * 100)
+        const pct = totalCount > 0 ? ((d.value / totalCount) * 100).toFixed(1) : 0
         const icon = DEPT_ICONS[d.name] || ''
         const barColor = BAR_COLORS[idx % BAR_COLORS.length]
 
@@ -54,7 +54,9 @@ export default function DepartmentChart({ meetings = [] }) {
                 <span>{icon}</span>
                 <span className="truncate">{d.name}</span>
               </span>
-              <span className="font-mono text-text-muted font-bold text-xs">{d.value} {d.value === 1 ? 'meeting' : 'meetings'}</span>
+              <span className="font-mono text-text-muted font-bold text-xs">
+                {d.value} {d.value === 1 ? 'meeting' : 'meetings'} ({pct}%)
+              </span>
             </div>
             <div className="w-full bg-surface-raised border border-border/40 h-2.5 rounded-full overflow-hidden">
               <div

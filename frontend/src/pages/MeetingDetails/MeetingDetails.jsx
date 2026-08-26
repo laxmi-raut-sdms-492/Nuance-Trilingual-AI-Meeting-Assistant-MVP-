@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import toast from 'react-hot-toast'
 import Icon from '../../components/common/Icon.jsx'
 import EmptyState from '../../components/common/EmptyState.jsx'
@@ -492,7 +492,25 @@ export default function MeetingDetails() {
   const [audioVersion, setAudioVersion] = useState(0)
   const [showRawAsr, setShowRawAsr] = useState(false)
   const [rebuildingSummary, setRebuildingSummary] = useState(false)
+  const [audioCurrentTime, setAudioCurrentTime] = useState(0)
   const autoLabeledRef = useRef(false)
+  const lineRefs = useRef([])
+
+  const activeLineIndex = useMemo(() => {
+    if (!meeting?.transcript?.length || audioCurrentTime <= 0) return -1
+    return meeting.transcript.findIndex(
+      (t) => audioCurrentTime >= Number(t.start_sec || 0) && audioCurrentTime <= Number(t.end_sec || 0)
+    )
+  }, [meeting?.transcript, audioCurrentTime])
+
+  useEffect(() => {
+    if (activeLineIndex >= 0 && lineRefs.current[activeLineIndex]) {
+      lineRefs.current[activeLineIndex].scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+      })
+    }
+  }, [activeLineIndex])
 
   const load = useCallback(async () => {
     try {
@@ -722,6 +740,7 @@ export default function MeetingDetails() {
         onImportAudio={handleImportAudio}
         importDisabled={processing}
         audioVersion={audioVersion}
+        onTimeUpdate={setAudioCurrentTime}
       />
 
       {processing && (
@@ -847,8 +866,17 @@ export default function MeetingDetails() {
                   <div className="flex flex-col gap-8">
                     {filteredTranscript.map((t, i) => {
                       const devanagari = isDevanagari(t.language)
+                      const isActive = i === activeLineIndex
                       return (
-                        <div key={i} className="flex gap-4 group">
+                        <div
+                          key={i}
+                          ref={(el) => (lineRefs.current[i] = el)}
+                          className={`flex gap-4 group p-3 rounded-lg transition-all ${
+                            isActive
+                              ? 'border-l-4 border-l-amber-500 bg-amber-500/10 shadow-sm ring-1 ring-amber-500/30'
+                              : 'hover:bg-surface-raised/40'
+                          }`}
+                        >
                           <div className="w-12 text-right flex-shrink-0 pt-1">
                             <span className="font-meta-data text-meta-data text-text-faint group-hover:text-text-muted transition-colors">
                               {t.time}
@@ -1081,85 +1109,66 @@ export default function MeetingDetails() {
                       </div>
                     )}
 
-                    {/* ⏳ Pending / Unresolved */}
+                    {/* ⏳ Pending / Unresolved (Grouped by Speaker) */}
                     {meeting.insights?.pending?.length > 0 ? (
                       <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
                         <div className="flex items-center gap-2 mb-2">
                           <span className="text-lg">⏳</span>
-                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved Tasks</h3>
                         </div>
-                        <p className="text-xs font-meta-data text-text-faint mb-4">Track things discussed that require follow-up resolution.</p>
-                        <div className="flex flex-col gap-4">
-                          {meeting.insights.pending.map((p, idx) => {
+                        <p className="text-xs font-meta-data text-text-faint mb-4">Track things discussed that require follow-up resolution (Grouped by Speaker/Owner).</p>
+                        
+                        {(() => {
+                          const grouped = {}
+                          meeting.insights.pending.forEach((p) => {
                             const text = typeof p === 'string' ? p : (p.description || p.topic || '')
                             const status = typeof p === 'string' ? 'Pending' : (p.status || 'Pending')
-                            const owner = typeof p === 'object' ? p.owner : null
+                            const owner = (typeof p === 'object' && p.owner) ? p.owner : 'Unassigned'
+                            if (!grouped[owner]) grouped[owner] = []
+                            grouped[owner].push({ text, status, owner })
+                          })
 
-                            return (
-                              <div key={idx} className="flex flex-col gap-1.5 p-3.5 rounded-lg bg-surface-raised border border-border/60">
-                                <div className="flex items-start justify-between gap-3">
-                                  <span className="font-medium text-text-primary text-sm leading-relaxed">{text}</span>
-                                  <span className="text-xs font-meta-data px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 shrink-0">
-                                    {status}
-                                  </span>
+                          return (
+                            <div className="flex flex-col gap-4">
+                              {Object.entries(grouped).map(([ownerName, items], gIdx) => (
+                                <div key={gIdx} className="border border-border/50 rounded-xl p-4 bg-surface-raised/40">
+                                  <div className="flex items-center justify-between pb-2 mb-3 border-b border-border/40">
+                                    <div className="flex items-center gap-2">
+                                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0" />
+                                      <span className="font-sidebar-header text-xs font-bold text-text-primary uppercase tracking-wider">
+                                        Speaker / Owner: <span className="text-amber-400 font-extrabold">{ownerName}</span>
+                                      </span>
+                                    </div>
+                                    <span className="text-[11px] font-meta-data px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20 font-bold">
+                                      {items.length} Task{items.length > 1 ? 's' : ''}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-col gap-2.5">
+                                    {items.map((item, idx) => (
+                                      <div key={idx} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-surface border border-border/60">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                          <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
+                                          <span className="font-medium text-text-primary text-sm leading-relaxed">{item.text}</span>
+                                        </div>
+                                        <span className="text-xs font-meta-data px-2 py-0.5 rounded bg-warning/10 text-warning border border-warning/20 shrink-0">
+                                          {item.status}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
                                 </div>
-                                {owner && (
-                                  <span className="text-xs text-text-faint mt-0.5">Owner: <strong className="text-text-muted">{owner}</strong></span>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
+                              ))}
+                            </div>
+                          )
+                        })()}
                       </div>
                     ) : (
                       <div className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between shadow-sm">
                         <div className="flex items-center gap-2">
                           <span className="text-lg">⏳</span>
-                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved</h3>
+                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Pending / Unresolved Tasks</h3>
                         </div>
                         <span className="text-xs font-meta-data text-text-faint">No pending or unresolved items recorded</span>
-                      </div>
-                    )}
-
-                    {/* 📋 Action Items & Commitments */}
-                    {meeting.insights?.commitments?.length > 0 ? (
-                      <div className="bg-surface border border-border rounded-xl p-5 shadow-sm">
-                        <div className="flex items-center gap-2 mb-3">
-                          <span className="text-lg">📋</span>
-                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Action Items & Commitments</h3>
-                        </div>
-                        <div className="overflow-x-auto">
-                          <table className="w-full text-left border-collapse text-xs font-meta-data">
-                            <thead>
-                              <tr className="border-b border-border text-text-faint uppercase">
-                                <th className="py-2.5 px-3">Owner</th>
-                                <th className="py-2.5 px-3">Action Item</th>
-                                <th className="py-2.5 px-3">Timing / Deadline</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-border/60 text-text-muted">
-                              {meeting.insights.commitments.map((c, idx) => (
-                                <tr key={idx} className="hover:bg-surface-raised/50">
-                                  <td className="py-3 px-3 font-semibold text-text-primary whitespace-nowrap">{c.owner || 'Team'}</td>
-                                  <td className="py-3 px-3 leading-relaxed">{c.action || c.text}</td>
-                                  <td className="py-3 px-3 whitespace-nowrap">
-                                    <span className={`px-2 py-0.5 rounded text-xs ${c.timing && c.timing !== 'No explicit deadline stated' ? 'bg-primary/10 text-primary border border-primary/20' : 'bg-surface-raised text-text-faint'}`}>
-                                      {c.timing || c.timeframe || 'No explicit deadline stated'}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="bg-surface border border-border rounded-xl p-4 flex items-center justify-between shadow-sm">
-                        <div className="flex items-center gap-2">
-                          <span className="text-lg">📋</span>
-                          <h3 className="font-sidebar-header text-sidebar-header text-text-primary">Action Items & Commitments</h3>
-                        </div>
-                        <span className="text-xs font-meta-data text-text-faint">None. Nobody was assigned a specific task, deadline, or responsibility.</span>
                       </div>
                     )}
                       </div>

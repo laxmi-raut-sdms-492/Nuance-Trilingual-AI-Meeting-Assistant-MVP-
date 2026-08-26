@@ -59,7 +59,15 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
-  const details = { title, agenda, stt_adapter: sttAdapter, processingMode: sttAdapter, meetingType, department, projectName }
+  const getDetails = () => ({
+    title,
+    agenda,
+    stt_adapter: sttAdapter,
+    processingMode: sttAdapter,
+    meetingType,
+    department,
+    projectName,
+  })
 
   const validateDetails = () => {
     const errors = {}
@@ -85,7 +93,7 @@ export default function UploadMeeting() {
     setUploadError(null)
 
     try {
-      const record = await addMeeting(f, details, (event) => {
+      const record = await addMeeting(f, getDetails(), (event) => {
         if (!event.total) return
         setProgress(Math.round((event.loaded / event.total) * 100))
       })
@@ -159,15 +167,20 @@ export default function UploadMeeting() {
     setStep('details')
   }
 
-  const stepLabel =
-    status !== 'idle'
-      ? 'Step 3 of 3: Uploading & Processing'
-      : step === 'details'
-        ? 'Step 1 of 3: Details'
-        : 'Step 2 of 3: Provide Source'
+  const handleFormSubmit = (e) => {
+    e.preventDefault()
+    if (!validateDetails()) return
+    if (!file) {
+      toast.error('Please select an audio or video file to upload.')
+      return
+    }
+    uploadFile(file)
+  }
+
+  const stepLabel = status !== 'idle' ? 'Processing Meeting Audio' : 'Provide Meeting Details & Audio Source'
 
   return (
-    <div className="w-full max-w-[768px] mx-auto flex flex-col gap-8">
+    <div className="w-full max-w-[800px] mx-auto flex flex-col gap-6">
       <div className="flex justify-between items-start gap-4">
         <div>
           <h1 className="font-headline-lg-mobile md:font-headline-lg text-headline-lg-mobile md:text-headline-lg text-text-primary">
@@ -185,259 +198,264 @@ export default function UploadMeeting() {
         </button>
       </div>
 
-      {/* ---------------------------------------------------------------- */}
-      {step === 'details' && (
-        <div className="bg-surface rounded-xl border border-border overflow-hidden relative">
-          <div className="h-1 w-full bg-primary-container absolute top-0 left-0" />
-          <form onSubmit={handleContinue} className="p-8 space-y-6" noValidate>
+      {status === 'idle' && (
+        <form onSubmit={handleFormSubmit} className="bg-surface rounded-xl border border-border overflow-hidden p-6 md:p-8 space-y-6" noValidate>
+          {/* Meeting Title */}
+          <div className="space-y-2">
+            <label
+              className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
+              htmlFor="meeting-title"
+            >
+              Meeting Title <span className="text-error">*</span>
+            </label>
+            <input
+              id="meeting-title"
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g. Q3 Architecture & Sprint Sync"
+              aria-invalid={Boolean(formErrors.title)}
+              aria-describedby={formErrors.title ? 'title-error' : undefined}
+              className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors ${
+                formErrors.title ? 'input-error' : ''
+              }`}
+            />
+            {formErrors.title && <FieldError id="title-error">{formErrors.title}</FieldError>}
+          </div>
+
+          {/* Meeting Category Selection */}
+          <div className="space-y-2">
+            <label className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider">
+              Meeting Category
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setMeetingType('internal')}
+                className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${
+                  meetingType === 'internal'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-surface text-text-muted hover:text-text-primary hover:border-text-muted'
+                }`}
+              >
+                <Icon name="groups" className="text-lg" />
+                <span>Internal Meeting</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMeetingType('client')}
+                className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${
+                  meetingType === 'client'
+                    ? 'border-primary bg-primary/10 text-primary'
+                    : 'border-border bg-surface text-text-muted hover:text-text-primary hover:border-text-muted'
+                }`}
+              >
+                <Icon name="handshake" className="text-lg" />
+                <span>Client Meeting</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Department & Project / Client Name */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <label
                 className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
-                htmlFor="meeting-title"
+                htmlFor="meeting-department"
               >
-                Meeting Title <span className="text-error">*</span>
+                Department
               </label>
-              <input
-                id="meeting-title"
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="e.g. Q3 Architecture & Sprint Sync"
-                aria-invalid={Boolean(formErrors.title)}
-                aria-describedby={formErrors.title ? 'title-error' : undefined}
-                className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors ${
-                  formErrors.title ? 'input-error' : ''
-                }`}
-              />
-              {formErrors.title && <FieldError id="title-error">{formErrors.title}</FieldError>}
-            </div>
-
-            {/* Meeting Type Selection: Internal vs Client */}
-            <div className="space-y-2">
-              <label className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider">
-                Meeting Category
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setMeetingType('internal')}
-                  className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${
-                    meetingType === 'internal'
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-border bg-surface text-text-muted hover:text-text-primary hover:border-text-muted'
-                  }`}
-                >
-                  <Icon name="groups" className="text-lg" />
-                  <span> Internal Meeting</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMeetingType('client')}
-                  className={`flex items-center justify-center gap-2 p-3 rounded-lg border text-sm font-medium transition-colors ${
-                    meetingType === 'client'
-                      ? 'border-primary bg-primary/10 text-primary'
-                      : 'border-border bg-surface text-text-muted hover:text-text-primary hover:border-text-muted'
-                  }`}
-                >
-                  <Icon name="handshake" className="text-lg" />
-                  <span>Client Meeting</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Department & Project / Client Name Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <label
-                  className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
-                  htmlFor="meeting-department"
-                >
-                  Department
-                </label>
-                <select
-                  id="meeting-department"
-                  value={department}
-                  onChange={(e) => setDepartment(e.target.value)}
-                  className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body bg-surface text-text-primary transition-colors cursor-pointer"
-                >
-                  <option value="AI Team"> AI Team</option>
-                  <option value="Software"> Software Engineering</option>
-                  <option value="QA"> QA & Testing</option>
-                  <option value="Product & Design"> Product & Design</option>
-                  <option value="Management"> Management</option>
-                  <option value="Sales & Marketing"> Sales & Marketing</option>
-                  <option value="Other"> Other</option>
-                </select>
-              </div>
-
-              <div className="space-y-2">
-                <label
-                  className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
-                  htmlFor="project-name"
-                >
-                  {meetingType === 'client' ? 'Client / Account Name' : 'Project Name'}
-                </label>
-                <input
-                  id="project-name"
-                  type="text"
-                  value={projectName}
-                  onChange={(e) => setProjectName(e.target.value)}
-                  placeholder={meetingType === 'client' ? 'e.g. Acme Corp' : 'e.g. Nuance AI Assistant'}
-                  className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors"
-                />
-              </div>
+              <select
+                id="meeting-department"
+                value={department}
+                onChange={(e) => setDepartment(e.target.value)}
+                className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body bg-surface text-text-primary transition-colors cursor-pointer"
+              >
+                <option value="AI Team">AI Team</option>
+                <option value="Software">Software Engineering</option>
+                <option value="QA">QA & Testing</option>
+                <option value="Product & Design">Product & Design</option>
+                <option value="Management">Management</option>
+                <option value="Sales & Marketing">Sales & Marketing</option>
+                <option value="Other">Other</option>
+              </select>
             </div>
 
             <div className="space-y-2">
               <label
-                className="font-label-sm text-label-sm text-text-primary uppercase tracking-wider flex justify-between"
-                htmlFor="meeting-agenda"
+                className="block font-label-sm text-label-sm text-text-primary uppercase tracking-wider"
+                htmlFor="project-name"
               >
-                <span>
-                  Agenda <span className="text-error">*</span>
-                </span>
-                <span className="text-text-muted font-normal lowercase tracking-normal">
-                  {agenda.length}/{AGENDA_LIMIT}
-                </span>
+                {meetingType === 'client' ? 'Client / Account Name' : 'Project Name'}
               </label>
-              <textarea
-                id="meeting-agenda"
-                value={agenda}
-                maxLength={AGENDA_LIMIT}
-                onChange={(e) => setAgenda(e.target.value)}
-                placeholder="What will this meeting cover?"
-                rows={3}
-                aria-invalid={Boolean(formErrors.agenda)}
-                aria-describedby={formErrors.agenda ? 'agenda-error' : undefined}
-                className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors resize-y ${
-                  formErrors.agenda ? 'input-error' : ''
-                }`}
+              <input
+                id="project-name"
+                type="text"
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder={meetingType === 'client' ? 'e.g. Acme Corp' : 'e.g. Nuance AI Assistant'}
+                className="w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors"
               />
-              {formErrors.agenda && <FieldError id="agenda-error">{formErrors.agenda}</FieldError>}
+            </div>
+          </div>
+
+          {/* Agenda */}
+          <div className="space-y-2">
+            <label
+              className="font-label-sm text-label-sm text-text-primary uppercase tracking-wider flex justify-between"
+              htmlFor="meeting-agenda"
+            >
+              <span>
+                Agenda <span className="text-error">*</span>
+              </span>
+              <span className="text-text-muted font-normal lowercase tracking-normal">
+                {agenda.length}/{AGENDA_LIMIT}
+              </span>
+            </label>
+            <textarea
+              id="meeting-agenda"
+              value={agenda}
+              maxLength={AGENDA_LIMIT}
+              onChange={(e) => setAgenda(e.target.value)}
+              placeholder="What will this meeting cover?"
+              rows={3}
+              aria-invalid={Boolean(formErrors.agenda)}
+              aria-describedby={formErrors.agenda ? 'agenda-error' : undefined}
+              className={`w-full rounded-lg border input-base px-4 py-3 font-transcript-body text-transcript-body placeholder:text-text-faint transition-colors resize-y ${
+                formErrors.agenda ? 'input-error' : ''
+              }`}
+            />
+            {formErrors.agenda && <FieldError id="agenda-error">{formErrors.agenda}</FieldError>}
+          </div>
+
+          {/* Audio Source Dropzone (Placed on same page directly below Agenda) */}
+          <div className="space-y-3 pt-4 border-t border-border">
+            <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex gap-3">
+              <Icon name="translate" className="text-primary shrink-0 mt-0.5" />
+              <div>
+                <p className="font-label-sm text-label-sm text-text-primary">
+                  Trilingual transcription
+                </p>
+                <p className="font-meta-data text-meta-data text-text-muted mt-1">
+                  Speech is detected and transcribed automatically in {SUPPORTED_LANGUAGE_NAMES}. Speakers can code-switch freely within one meeting.
+                </p>
+              </div>
             </div>
 
-            <div className="pt-6 border-t border-border flex justify-end items-center gap-3">
+            <div className="flex p-1 bg-surface-container rounded-lg w-fit border border-border mb-3">
+              {[
+                { key: 'upload', icon: 'upload_file', label: 'Upload File' },
+                { key: 'record', icon: 'mic', label: 'Record Audio' },
+              ].map((m) => (
+                <button
+                  key={m.key}
+                  type="button"
+                  onClick={() => setMode(m.key)}
+                  className={`px-6 py-2 rounded font-label-sm text-label-sm flex items-center gap-2 transition-all ${
+                    mode === m.key
+                      ? 'bg-surface-raised text-text-primary shadow-sm'
+                      : 'text-text-muted hover:text-text-primary hover:bg-surface/50'
+                  }`}
+                >
+                  <Icon name={m.icon} className="text-[16px]" />
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            {mode === 'upload' && (
+              <div
+                role="button"
+                tabIndex={0}
+                onDragOver={(e) => {
+                  e.preventDefault()
+                  setDragOver(true)
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => inputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click()
+                }}
+                className={`relative group rounded-xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center py-12 px-6 text-center cursor-pointer ${
+                  dragOver
+                    ? 'border-primary bg-primary/5'
+                    : file
+                    ? 'border-success bg-success/5'
+                    : 'border-border bg-surface hover:border-primary hover:bg-primary/5'
+                }`}
+              >
+                <div className="w-14 h-14 rounded-full bg-surface-raised group-hover:bg-primary/20 flex items-center justify-center mb-4 transition-colors border border-border group-hover:border-primary/50">
+                  <Icon
+                    name={file ? 'check_circle' : 'cloud_upload'}
+                    className={`text-2xl transition-colors ${file ? 'text-success' : 'text-text-muted group-hover:text-primary'}`}
+                  />
+                </div>
+                {file ? (
+                  <div>
+                    <h3 className="font-sidebar-header text-sidebar-header mb-1 text-success">
+                      File Selected: {file.name}
+                    </h3>
+                    <p className="font-meta-data text-xs text-text-muted">
+                      {(file.size / (1024 * 1024)).toFixed(2)} MB — Click or drag to replace
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <h3 className="font-sidebar-header text-sidebar-header mb-1 text-text-primary">
+                      Drag &amp; drop your file here
+                    </h3>
+                    <p className="font-meta-data text-meta-data text-text-muted mb-4">
+                      or click to browse your computer
+                    </p>
+                    <div className="px-4 py-2 rounded-full bg-surface-container-high border border-border font-label-sm text-label-sm text-text-faint inline-block">
+                      Supported: MP3, WAV, M4A, MP4 (Max {MAX_UPLOAD_MB} MB)
+                    </div>
+                  </div>
+                )}
+                <input
+                  ref={inputRef}
+                  type="file"
+                  accept={ACCEPTED.join(',')}
+                  className="hidden"
+                  onChange={handleBrowse}
+                />
+              </div>
+            )}
+
+            {mode === 'record' && (
+              <div className="rounded-xl border border-border bg-surface p-6">
+                <AudioRecorder onRecordingComplete={handleRecordingComplete} />
+              </div>
+            )}
+          </div>
+
+          {/* Submit Actions */}
+          <div className="pt-6 border-t border-border flex justify-between items-center gap-3">
+            <div className="flex items-center gap-2">
+              <label htmlFor="stt-adapter-selector" className="text-xs font-meta-data text-text-muted">
+                STT Engine:
+              </label>
               <select
                 id="stt-adapter-selector"
                 value={sttAdapter}
                 onChange={(e) => setSttAdapter(e.target.value)}
-                className="bg-surface border border-border text-text-primary font-label-sm text-label-sm px-3 py-3 rounded-lg focus:outline-none focus:border-primary transition-colors cursor-pointer"
+                className="bg-surface border border-border text-text-primary font-label-sm text-label-sm px-3 py-2 rounded-lg focus:outline-none focus:border-primary transition-colors cursor-pointer"
               >
                 <option value="local">Local STT</option>
                 <option value="cloud">Cloud STT</option>
               </select>
-              <button
-                type="submit"
-                className="bg-cta text-on-cta font-label-sm text-label-sm px-6 py-3 rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2"
-              >
-                Continue
-                <Icon name="arrow_forward" size={18} />
-              </button>
             </div>
-          </form>
-        </div>
-      )}
-
-      {/* ---------------------------------------------------------------- */}
-      {step === 'source' && (
-        <>
-          {status === 'idle' && (
-            <>
-              <button
-                type="button"
-                onClick={() => setStep('details')}
-                className="group flex items-center gap-2 text-text-muted hover:text-text-primary transition-colors -mt-4"
-              >
-                <Icon name="arrow_back" className="text-lg" />
-                <span className="font-meta-data text-meta-data">Back to details</span>
-              </button>
-
-              <div className="bg-primary/5 border border-primary/20 rounded-xl p-4 flex gap-3">
-                <Icon name="translate" className="text-primary shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-label-sm text-label-sm text-text-primary">
-                    Trilingual transcription
-                  </p>
-                  <p className="font-meta-data text-meta-data text-text-muted mt-1">
-                    Speech is detected and transcribed automatically in {SUPPORTED_LANGUAGE_NAMES}.
-                    Speakers can code-switch freely within one meeting.
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex p-1 bg-surface-container rounded-lg w-fit border border-border">
-                {[
-                  { key: 'upload', icon: 'upload_file', label: 'Upload File' },
-                  { key: 'record', icon: 'mic', label: 'Record Audio' },
-                ].map((m) => (
-                  <button
-                    key={m.key}
-                    type="button"
-                    onClick={() => setMode(m.key)}
-                    className={`px-6 py-2 rounded font-label-sm text-label-sm flex items-center gap-2 transition-all ${
-                      mode === m.key
-                        ? 'bg-surface-raised text-text-primary shadow-sm'
-                        : 'text-text-muted hover:text-text-primary hover:bg-surface/50'
-                    }`}
-                  >
-                    <Icon name={m.icon} className="text-[16px]" />
-                    {m.label}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
-
-          {status === 'idle' && mode === 'upload' && (
-            <div
-              role="button"
-              tabIndex={0}
-              onDragOver={(e) => {
-                e.preventDefault()
-                setDragOver(true)
-              }}
-              onDragLeave={() => setDragOver(false)}
-              onDrop={handleDrop}
-              onClick={() => inputRef.current?.click()}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click()
-              }}
-              className={`relative group rounded-xl border-2 border-dashed transition-all duration-300 flex flex-col items-center justify-center py-20 px-6 text-center cursor-pointer ${
-                dragOver
-                  ? 'border-primary bg-primary/5'
-                  : 'border-border bg-surface hover:border-primary hover:bg-primary/5'
-              }`}
+            <button
+              type="submit"
+              className="bg-cta text-on-cta font-label-sm text-label-sm px-6 py-3 rounded-lg hover:bg-primary-container transition-colors flex items-center gap-2"
             >
-              <div className="w-16 h-16 rounded-full bg-surface-raised group-hover:bg-primary/20 flex items-center justify-center mb-6 transition-colors border border-border group-hover:border-primary/50">
-                <Icon
-                  name="cloud_upload"
-                  className="text-3xl text-text-muted group-hover:text-primary transition-colors"
-                />
-              </div>
-              <h3 className="font-sidebar-header text-sidebar-header mb-2 text-text-primary">
-                Drag &amp; drop your file here
-              </h3>
-              <p className="font-meta-data text-meta-data text-text-muted mb-6">
-                or click to browse your computer
-              </p>
-              <div className="px-4 py-2 rounded-full bg-surface-container-high border border-border font-label-sm text-label-sm text-text-faint">
-                Supported: MP3, WAV, M4A, MP4 (Max {MAX_UPLOAD_MB} MB)
-              </div>
-              <input
-                ref={inputRef}
-                type="file"
-                accept={ACCEPTED.join(',')}
-                className="hidden"
-                onChange={handleBrowse}
-              />
-            </div>
-          )}
-
-          {status === 'idle' && mode === 'record' && (
-            <div className="rounded-xl border border-border bg-surface p-8">
-              <AudioRecorder onRecordingComplete={handleRecordingComplete} />
-            </div>
-          )}
+              <Icon name="rocket_launch" size={18} />
+              <span>Start Processing Meeting</span>
+            </button>
+          </div>
+        </form>
+      )}
 
           {status !== 'idle' && file && (
             <div className="bg-surface border border-border rounded-xl p-8 flex flex-col gap-6">
@@ -538,8 +556,6 @@ export default function UploadMeeting() {
               </div>
             </div>
           )}
-        </>
-      )}
     </div>
   )
 }

@@ -392,7 +392,7 @@ export default function AnalyticsPage() {
                               className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 rounded-lg border border-border/60 bg-surface-raised text-xs"
                             >
                               <div className="flex items-center gap-2.5 min-w-0">
-                                <Icon name="check_box_outline_blank" size={16} className="text-amber-500 shrink-0" />
+                                <span className="w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0 mx-0.5" />
                                 <span className="font-medium text-text-primary truncate">{task.text}</span>
                               </div>
                               <div className="flex items-center gap-2 shrink-0 self-end sm:self-auto font-meta-data text-[11px] text-text-muted">

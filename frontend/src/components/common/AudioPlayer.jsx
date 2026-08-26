@@ -170,6 +170,8 @@ export default function AudioPlayer({
   importDisabled = false,
   audioVersion = 0,
   durationSeconds = 0,
+  onTimeUpdate,
+  seekTime,
 }) {
   const audioRef = useRef(null)
   const speedMenuRef = useRef(null)
@@ -312,7 +314,11 @@ export default function AudioPlayer({
             setDuration(e.currentTarget.duration || 0)
             e.currentTarget.playbackRate = playbackSpeed
           }}
-          onTimeUpdate={(e) => setCurrent(e.currentTarget.currentTime)}
+          onTimeUpdate={(e) => {
+            const t = e.currentTarget.currentTime
+            setCurrent(t)
+            onTimeUpdate?.(t)
+          }}
           onPlay={(e) => {
             setPlaying(true)
             e.currentTarget.playbackRate = playbackSpeed

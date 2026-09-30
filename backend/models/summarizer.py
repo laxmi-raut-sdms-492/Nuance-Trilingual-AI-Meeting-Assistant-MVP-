@@ -749,15 +749,18 @@ def _build_multilingual_summaries(transcript: list[dict], base_summary: str | No
         elif lat_chars > 0:
             en_lines.append(text)
 
+    if base_summary and "no executive summary available" in base_summary.lower():
+        base_summary = None
+
     def _format_summary_lines(lines: list[str]) -> str:
-        summary_text = " ".join(lines[:2])
-        if len(summary_text.split()) > 35:
-            summary_text = " ".join(summary_text.split()[:35]).rstrip(",;:") + "."
+        summary_text = " ".join(lines[:3])
+        if len(summary_text.split()) > 45:
+            summary_text = " ".join(summary_text.split()[:45]).rstrip(",;:") + "."
         return summary_text
 
-    summary_en = _format_summary_lines(en_lines) if en_lines else base_summary
-    summary_mr = _format_summary_lines(mr_lines) if mr_lines else base_summary
-    summary_hi = _format_summary_lines(hi_lines) if hi_lines else base_summary
+    summary_en = (base_summary if base_summary else _format_summary_lines(en_lines or [l.get('text','') for l in transcript]))
+    summary_mr = _format_summary_lines(mr_lines) if mr_lines else summary_en
+    summary_hi = _format_summary_lines(hi_lines) if hi_lines else summary_en
 
     return {
         "en": summary_en or base_summary,

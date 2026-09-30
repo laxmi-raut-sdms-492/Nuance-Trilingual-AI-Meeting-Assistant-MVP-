@@ -54,6 +54,32 @@ app = FastAPI(
     ),
 )
 
+
+@app.on_event("startup")
+def cleanup_stuck_processing_meetings():
+    """Reset any processing meetings orphaned by server restarts."""
+    try:
+        from sqlalchemy import func, select
+        from db.models import Meeting, TranscriptLine
+        from db.session import session_scope
+
+        with session_scope() as session:
+            stuck = session.scalars(
+                select(Meeting).where(Meeting.status == "Processing")
+            ).all()
+            for m in stuck:
+                line_count = session.scalar(
+                    select(func.count(TranscriptLine.id)).where(TranscriptLine.meeting_id == m.id)
+                ) or 0
+                if line_count > 0:
+                    m.status = "Completed"
+                    m.progress = 100
+                else:
+                    m.status = "Failed"
+                    m.error = "Interrupted by server restart. Please re-upload audio."
+    except Exception as exc:
+        logging.getLogger("startup").warning(f"Could not cleanup stuck processing meetings: {exc}")
+
 @app.get("/")
 def root():
     """Friendly landing page — `/docs` alone confused people into thinking the backend was broken."""

@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 const PALETTE = [
   '#6366f1', '#22c55e', '#f59e0b', '#ec4899',
   '#14b8a6', '#8b5cf6', '#ef4444', '#0ea5e9'
@@ -18,7 +20,21 @@ function initialsFor(name) {
   return (first + last).toUpperCase()
 }
 
-export default function Avatar({ name, size = 36, className = '' }) {
+export default function Avatar({ name, src = '/profile.jpg', size = 36, className = '' }) {
+  const [imgError, setImgError] = useState(false)
+
+  if (src && !imgError) {
+    return (
+      <img
+        src={src}
+        alt={name || 'User Avatar'}
+        onError={() => setImgError(true)}
+        className={`rounded-full object-cover shrink-0 ${className}`}
+        style={{ width: size, height: size }}
+      />
+    )
+  }
+
   return (
     <div
       className={`rounded-full flex items-center justify-center shrink-0 font-semibold text-white ${className}`}

@@ -120,6 +120,10 @@ class Meeting(Base):
     # data-fixup and unambiguously mean "local, as before".
     processing_mode: Mapped[str | None] = mapped_column(String(16), nullable=True)
     stt_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Set while a Sarvam meeting is paused for a yes/no on switching to the
+    # local model. Cleared once the user answers. decline means stay on Sarvam.
+    fallback_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fallback_decision: Mapped[str | None] = mapped_column(String(16), nullable=True)
     insights: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     meeting_type: Mapped[str | None] = mapped_column(String(32), nullable=True, default="internal")
@@ -174,6 +178,10 @@ class Meeting(Base):
         CheckConstraint(
             "processing_mode IS NULL OR processing_mode IN ('local', 'cloud')",
             name="ck_meetings_processing_mode",
+        ),
+        CheckConstraint(
+            "fallback_decision IS NULL OR fallback_decision IN ('allow', 'decline')",
+            name="ck_meetings_fallback_decision",
         ),
     )
 

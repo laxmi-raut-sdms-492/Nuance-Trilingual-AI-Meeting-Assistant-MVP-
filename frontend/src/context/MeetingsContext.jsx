@@ -80,18 +80,18 @@ export function MeetingsProvider({ children }) {
     formData.append('file', file, file.name)
     formData.append('title', details.title?.trim() || '')
     formData.append('agenda', details.agenda?.trim() || '')
-    formData.append('stt_adapter', details.stt_adapter || 'local')
     formData.append('meeting_type', details.meetingType || 'internal')
     formData.append('department', details.department || 'AI Team')
     formData.append('project_name', details.projectName?.trim() || '')
 
-    // Backward compatible: any existing caller that doesn't pass
-    // processingMode still sends 'local', which is also the backend's own
-    // default for an omitted/blank value — see stt/resolver.py.
-    const processingMode = details.processingMode === 'cloud' ? 'cloud' : 'local'
+    // Local STT is sent only when the user chose it. Cloud STT is Sarvam.
+    const choseLocal = details.stt_adapter === 'local' || details.processingMode === 'local'
+    const choseCloud = details.stt_adapter === 'cloud' || details.processingMode === 'cloud'
+    const processingMode = choseLocal && !choseCloud ? 'local' : 'cloud'
+    formData.append('stt_adapter', processingMode)
     formData.append('processing_mode', processingMode)
     if (processingMode === 'cloud') {
-      formData.append('stt_provider', details.sttProvider || 'sarvam')
+      formData.append('stt_provider', 'sarvam')
     }
 
     const { data } = await meetingsApi.create(formData, onUploadProgress)

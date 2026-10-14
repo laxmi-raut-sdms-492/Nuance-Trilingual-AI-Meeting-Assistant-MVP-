@@ -170,8 +170,6 @@ class SarvamSTTAdapter(STTAdapter):
         # exactly the code-switching failure mode this app exists to avoid.
         language_code = "unknown"
 
-        from sarvamai.core.api_error import ApiError
-
         try:
             response = self._client.speech_to_text.transcribe(
                 file=("segment.wav", wav_bytes, "audio/wav"),
@@ -182,15 +180,10 @@ class SarvamSTTAdapter(STTAdapter):
                 input_audio_codec="wav",
             )
         except Exception as exc:  # ApiError (e.g. 402 quota), timeout, network
-            logger.warning(
-                f"Sarvam STT failed ({exc}) — falling back to Local STT (Whisper)"
-            )
-            if not hasattr(self, "_local_fallback"):
-                from stt.local_adapter import LocalSTTAdapter
-                self._local_fallback = LocalSTTAdapter()
-            return self._local_fallback.transcribe_with_context(
-                audio, start_sec=0.0, end_sec=len(audio) / SAMPLE_RATE, hint_language=hint_language
-            )
+            # Cloud STT stays on Sarvam. A failed segment is skipped rather
+            # than transcribed by Whisper or IndicConformer.
+            logger.warning(f"Sarvam STT failed ({exc}); this segment stays on Sarvam and is skipped")
+            return self._stamp(self._empty_result(hint_language))
 
         return self._stamp(self._to_contract(response, hint_language))
 

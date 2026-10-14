@@ -46,9 +46,10 @@ export default function UploadMeeting() {
   const [meetingType, setMeetingType] = useState('internal') // internal | client
   const [department, setDepartment] = useState('AI Team')
   const [projectName, setProjectName] = useState('')
-  const [sttAdapter, setSttAdapter] = useState('local') // local | cloud
+  const [sttAdapter, setSttAdapter] = useState('cloud') // cloud (Sarvam) | local
   const [formErrors, setFormErrors] = useState({})
-  const [processingMode, setProcessingMode] = useState('local') // local | cloud
+  // The value read at submit time. React state can lag a click; this cannot.
+  const sttAdapterRef = useRef('cloud')
 
   const [mode, setMode] = useState('upload') // upload | record
   const [dragOver, setDragOver] = useState(false)
@@ -59,15 +60,24 @@ export default function UploadMeeting() {
   const [uploadError, setUploadError] = useState(null)
   const inputRef = useRef(null)
 
-  const getDetails = () => ({
-    title,
-    agenda,
-    stt_adapter: sttAdapter,
-    processingMode: sttAdapter,
-    meetingType,
-    department,
-    projectName,
-  })
+  const chooseEngine = (value) => {
+    const engine = value === 'local' ? 'local' : 'cloud'
+    sttAdapterRef.current = engine
+    setSttAdapter(engine)
+  }
+
+  const getDetails = () => {
+    const engine = sttAdapterRef.current === 'local' ? 'local' : 'cloud'
+    return {
+      title,
+      agenda,
+      stt_adapter: engine,
+      processingMode: engine,
+      meetingType,
+      department,
+      projectName,
+    }
+  }
 
   const validateDetails = () => {
     const errors = {}
@@ -100,7 +110,8 @@ export default function UploadMeeting() {
       setProgress(100)
       setSavedMeeting(record)
       setStatus('done')
-      toast.success('Uploaded. Transcription is running now.')
+      const engine = sttAdapterRef.current === 'local' ? 'Local STT' : 'Cloud STT (Sarvam)'
+      toast.success(`Uploaded with ${engine}. Transcription is running now.`)
       return record
     } catch (err) {
       const message = describeError(err)
@@ -111,7 +122,10 @@ export default function UploadMeeting() {
     }
   }
 
-  const startUpload = (f) => {
+  // Picking a file must not start transcription. The request is sent only
+  // from Start Processing, so the STT Engine dropdown is the value that
+  // actually gets stored.
+  const acceptFile = (f) => {
     const ext = '.' + f.name.split('.').pop().toLowerCase()
     if (!ACCEPTED.includes(ext)) {
       toast.error(`Unsupported file type. Accepted: ${ACCEPTED.join(', ')}`)
@@ -121,19 +135,20 @@ export default function UploadMeeting() {
       toast.error(`That file is over the ${MAX_UPLOAD_MB} MB limit.`)
       return
     }
-    finishSave(f)
+    setFile(f)
   }
 
   const handleDrop = (e) => {
     e.preventDefault()
     setDragOver(false)
     const f = e.dataTransfer.files?.[0]
-    if (f) startUpload(f)
+    if (f) acceptFile(f)
   }
 
   const handleBrowse = (e) => {
     const f = e.target.files?.[0]
-    if (f) startUpload(f)
+    if (f) acceptFile(f)
+    e.target.value = ''
   }
 
   const handleRecordingComplete = async (blob) => {
@@ -163,7 +178,7 @@ export default function UploadMeeting() {
     setDepartment('AI Team')
     setProjectName('')
     setFormErrors({})
-    setProcessingMode('local')
+    chooseEngine('cloud')
     setStep('details')
   }
 
@@ -174,7 +189,7 @@ export default function UploadMeeting() {
       toast.error('Please select an audio or video file to upload.')
       return
     }
-    uploadFile(file)
+    finishSave(file)
   }
 
   const stepLabel = status !== 'idle' ? 'Processing Meeting Audio' : 'Provide Meeting Details & Audio Source'
@@ -439,11 +454,11 @@ export default function UploadMeeting() {
               <select
                 id="stt-adapter-selector"
                 value={sttAdapter}
-                onChange={(e) => setSttAdapter(e.target.value)}
+                onChange={(e) => chooseEngine(e.target.value)}
                 className="bg-surface border border-border text-text-primary font-label-sm text-label-sm px-3 py-2 rounded-lg focus:outline-none focus:border-primary transition-colors cursor-pointer"
               >
-                <option value="local">Local STT</option>
                 <option value="cloud">Cloud STT</option>
+                <option value="local">Local STT</option>
               </select>
             </div>
             <button

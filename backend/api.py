@@ -166,13 +166,29 @@ def get_meeting(meeting_id: str):
     return meeting
 
 
+def _stt_choice(processing_mode: str, stt_adapter: str, stt_provider: str) -> tuple[str, str | None]:
+    """Honor the upload's STT Engine exactly.
+
+    Local Whisper / IndicConformer runs only when the request says local.
+    Cloud stays on Sarvam, including when Sarvam later fails a segment.
+    """
+    mode = (processing_mode or "").strip().lower()
+    adapter = (stt_adapter or "").strip().lower()
+    provider = (stt_provider or "").strip().lower()
+    asked_cloud = mode == "cloud" or adapter == "cloud"
+    asked_local = mode == "local" or adapter == "local"
+    if asked_local and not asked_cloud:
+        return "local", None
+    return "cloud", provider or "sarvam"
+
+
 @router.post("/meetings", status_code=201)
 def create_meeting(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     title: str = Form(""),
     agenda: str = Form(""),
-    stt_adapter: str = Form("local"),
+    stt_adapter: str = Form(""),
     processing_mode: str = Form(""),
     stt_provider: str = Form(""),
     meeting_type: str = Form("internal"),
@@ -187,7 +203,14 @@ def create_meeting(
             f"Accepted: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}",
         )
 
-    adapter_choice = (stt_adapter or processing_mode or "local").strip().lower()
+    # Local models run only when this upload explicitly asks for Local STT.
+    # Cloud STT stays on Sarvam. A cloud choice is never rewritten to local.
+    raw_mode, raw_adapter = processing_mode, stt_adapter
+    adapter_choice, stt_provider = _stt_choice(processing_mode, stt_adapter, stt_provider)
+    logger.info(
+        f"STT choice processing_mode={raw_mode!r} stt_adapter={raw_adapter!r} "
+        f"-> {adapter_choice}/{stt_provider or 'local'}"
+    )
 
     tmp_path, size = _save_upload_to_temp(file)
 
@@ -866,6 +889,11 @@ def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
         logger.error(f"[{meeting_id}] could not resolve STT adapter: {exc}")
         store.update_meeting(meeting_id, status="Failed", progress=0, error=str(exc))
         return
+
+    logger.info(
+        f"[{meeting_id}] STT mode={processing_mode or 'local'} "
+        f"provider={stt_provider or 'local'}"
+    )
 
     with _processing_lock:
         try:

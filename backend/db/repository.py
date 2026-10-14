@@ -61,6 +61,8 @@ _MEETING_FIELDS = {
     "summaryEngine": "summary_engine",
     "processingMode": "processing_mode",
     "sttProvider": "stt_provider",
+    "fallbackPrompt": "fallback_prompt",
+    "fallbackDecision": "fallback_decision",
     "insights": "insights",
     "meetingType": "meeting_type",
     "department": "department",
@@ -175,6 +177,8 @@ def _to_dict(meeting: Meeting) -> dict:
         # so the frontend/API never needs its own copy of the default.
         "processingMode": meeting.processing_mode or DEFAULT_PROCESSING_MODE,
         "sttProvider": meeting.stt_provider,
+        "fallbackPrompt": meeting.fallback_prompt,
+        "fallbackDecision": meeting.fallback_decision,
         "insights": meeting.insights,
         "meetingType": meeting.meeting_type or "internal",
         "department": meeting.department or "AI Team",

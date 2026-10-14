@@ -20,7 +20,7 @@ function initialsFor(name) {
   return (first + last).toUpperCase()
 }
 
-export default function Avatar({ name, src = '/profile.jpg', size = 36, className = '' }) {
+export default function Avatar({ name, src = null, size = 36, className = '' }) {
   const [imgError, setImgError] = useState(false)
 
   if (src && !imgError) {

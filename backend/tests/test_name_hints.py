@@ -205,6 +205,32 @@ def test_extracts_marathi_self_introduction():
     assert extract_self_introduction_name("माझं नाव प्रिया आहे.") == "प्रिया"
 
 
+def test_unspoken_name_is_cleared_to_speaker_label():
+    from models.name_hints import names_without_speech
+
+    transcript = [
+        {
+            "speaker": "Ravi",
+            "speaker_label": "Speaker_00",
+            "language_prob": 0.4,
+            "text": "My name is Ravi",
+        },
+        {
+            "speaker": "Ravi",
+            "speaker_label": "Speaker_00",
+            "language_prob": 0.99,
+            "text": "Let us start the agenda.",
+        },
+        {
+            "speaker": "Speaker_01",
+            "speaker_label": "Speaker_01",
+            "language_prob": 0.99,
+            "text": "Agreed.",
+        },
+    ]
+    assert names_without_speech(transcript) == [("Ravi", "Speaker_00")]
+
+
 def test_extracts_hindi_greeted_name():
     from models.name_hints import extract_greeted_name
 
@@ -217,3 +243,24 @@ def test_extracts_hindi_greeted_name():
         }
     ]
     assert introduction_labels_from_transcript(transcript) == []
+
+
+def test_reply_after_named_greeting_gets_that_name():
+    from models.name_hints import resolve_names_from_greetings
+
+    transcript = [
+        {"speaker_label": "Speaker_00", "start_sec": 0, "end_sec": 3, "text": "Hi, how are you Anushka?"},
+        {"speaker_label": "Speaker_01", "start_sec": 3.5, "end_sec": 6, "text": "Hi, I am fine."},
+        {"speaker_label": "Speaker_02", "start_sec": 6.5, "end_sec": 9, "text": "Let us begin the meeting."},
+    ]
+    assert resolve_names_from_greetings(transcript) == {"Speaker_01": "Anushka"}
+
+
+def test_how_are_you_without_a_name_names_nobody():
+    from models.name_hints import resolve_names_from_greetings
+
+    transcript = [
+        {"speaker_label": "Speaker_00", "start_sec": 0, "end_sec": 3, "text": "Hi, how are you doing today?"},
+        {"speaker_label": "Speaker_01", "start_sec": 3.5, "end_sec": 6, "text": "Hi, I am fine."},
+    ]
+    assert resolve_names_from_greetings(transcript) == {}

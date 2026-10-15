@@ -101,13 +101,18 @@ def resolve_overlap_attribution(
     # Construct attributed transcript entries & attributed_spans list
     attributed_spans = []
     entries = []
-    for spk_label, asr_res, emb in [(best_c1_spk, asr1, emb1), (best_c2_spk, asr2, emb2)]:
+    for spk_label, asr_res, _emb in [(best_c1_spk, asr1, emb1), (best_c2_spk, asr2, emb2)]:
         txt = (asr_res.get("text") or "").strip()
         if not txt:
             continue
 
-        disp, conf = identifier.identify(emb)
-        display_name = disp if disp != UNKNOWN else spk_label
+        from models.name_hints import extract_self_introduction_name
+
+        spoken = extract_self_introduction_name(txt)
+        if spoken:
+            disp, conf, display_name = spoken, 1.0, spoken
+        else:
+            disp, conf, display_name = UNKNOWN, 0.0, spk_label
 
         span = {
             "speaker": display_name,

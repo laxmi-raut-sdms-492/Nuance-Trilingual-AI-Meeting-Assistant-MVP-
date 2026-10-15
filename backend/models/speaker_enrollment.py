@@ -209,6 +209,7 @@ def introduction_labels_from_transcript(transcript: list[dict]) -> list[dict]:
     """
     from models.name_hints import (
         extract_self_introduction_name,
+        line_can_name_a_speaker,
         resolve_names_from_greetings,
     )
 
@@ -230,6 +231,8 @@ def introduction_labels_from_transcript(transcript: list[dict]) -> list[dict]:
             continue
         display = display_by_label.get(label, label)
         if not _is_generic(display):
+            continue
+        if not line_can_name_a_speaker(line):
             continue
         hint = extract_self_introduction_name(line.get("text") or "")
         if hint:

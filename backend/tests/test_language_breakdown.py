@@ -117,3 +117,37 @@ def test_segments_without_a_language_are_skipped_not_counted_as_none():
 
 def test_empty_session_returns_empty_breakdown():
     assert _session().language_breakdown() == []
+
+
+def test_borrowed_latin_words_do_not_count_as_english():
+    """A Marathi line that mentions Pune or SI is still Marathi."""
+    session = _session()
+    session.raw_segments = [
+        _line(
+            0,
+            60,
+            "mr",
+            text="त्यावेळी श्रेणी चार मध्ये जे कर्मचारी होते तेच या नियमावर गेले Pune SI",
+        ),
+    ]
+    assert _by_code(session.language_breakdown()) == {"mr": 60.0}
+
+
+def test_brief_mislabels_are_not_listed():
+    """A few seconds of Hindi or English on a Marathi meeting stay off the chip."""
+    session = _session()
+    session.raw_segments = [
+        _line(0, 200, "mr", text="मराठी भाषण"),
+        _line(200, 206, "hi", text="माननीय महापौर"),
+        _line(206, 210, "en", text="hello"),
+    ]
+    assert {row["code"] for row in session.language_breakdown()} == {"mr"}
+
+
+def test_a_real_second_language_stays_listed():
+    session = _session()
+    session.raw_segments = [
+        _line(0, 70, "mr", text="मराठी"),
+        _line(70, 100, "en", text="We will continue in English now."),
+    ]
+    assert {row["code"] for row in session.language_breakdown()} == {"mr", "en"}

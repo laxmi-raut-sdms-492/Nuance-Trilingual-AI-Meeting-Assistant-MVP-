@@ -410,15 +410,13 @@ def enroll_speaker_from_meeting(
 
 
 @router.post("/meetings/{meeting_id}/identify-speakers")
-def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
+def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # noqa: ARG001
     """
     Automatically label speakers on an already-processed meeting.
 
-    Works for any number of speakers (dynamic, not limited to 2):
-    1) Multi-pass repair of collapsed dialogue (greetings + voice splits)
-    2) Self-intros / mutual greetings
-    3) Match against enrolled voice profiles
-    4) Merge true same-meeting voice fragments (high similarity / turn-taking)
+    A name is written only when the transcript says it (self-introduction
+    or a greeting that uses the name). Other speakers stay Speaker_00,
+    Speaker_01, and so on. Enrolled voice profiles are not applied.
     """
     meeting = store.get_meeting(meeting_id)
     if meeting is None:
@@ -427,13 +425,26 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
     transcript = meeting.get("transcript") or []
     path = store.audio_path(meeting_id)
 
-    from models.name_hints import repair_collapsed_greeting_turns
+    from models.name_hints import names_without_speech, repair_collapsed_greeting_turns
+
+    # Default for every meeting: a display name stays only when someone
+    # said it. Anything else goes back to Speaker_00, Speaker_01, and so on.
+    for old_name, speaker_label in names_without_speech(transcript):
+        updated = store.rename_speaker(meeting_id, old_name, speaker_label)
+        if updated is None:
+            continue
+        store.set_speaker_identification(
+            meeting_id,
+            speaker=speaker_label,
+            speaker_label=speaker_label,
+            identified_as="Unknown",
+            confidence=0.0,
+        )
+        meeting = store.get_meeting(meeting_id) or updated
+        transcript = meeting.get("transcript") or []
     from models.offline_diarizer import recluster_transcript_from_audio
     from models.speaker_enrollment import (
-        identify_speakers_in_meeting,
         introduction_labels_from_transcript,
-        enroll_from_meeting_audio,
-        same_meeting_fragment_merges,
         split_collapsed_lines_by_embedding,
     )
     from pipeline import format_duration
@@ -588,50 +599,13 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
         if not changed:
             break
 
+    # Names come only from words that were spoken (self-intro or a greeting
+    # that says the other person's name). Enrolled voices are not applied,
+    # so everyone else stays Speaker_00, Speaker_01, and so on.
     matches: list[dict] = []
 
     for intro in introduction_labels_from_transcript(transcript):
         matches.append(intro)
-
-    claimed = {m["speaker_label"] for m in matches}
-    if path and _identifier().list_speakers():
-        try:
-            for voice in identify_speakers_in_meeting(
-                _identifier(),
-                audio_path=path,
-                transcript=transcript,
-            ):
-                if voice.get("matched") and voice["speaker_label"] not in claimed:
-                    matches.append(voice)
-                    claimed.add(voice["speaker_label"])
-        except Exception:
-            logger.exception(f"[{meeting_id}] voice identify-speakers failed")
-
-    named_labels: dict[str, str] = {}
-    for line in transcript:
-        label = line.get("speaker_label") or line.get("speaker")
-        display = line.get("speaker") or label
-        if not label or not display:
-            continue
-        if re.match(r"(?i)^speaker[_\s]?\d+$", str(display).strip()):
-            continue
-        named_labels.setdefault(label, display)
-    for match in matches:
-        if match.get("matched"):
-            named_labels[match["speaker_label"]] = match["identified_as"]
-
-    if path is not None or named_labels:
-        try:
-            for frag in same_meeting_fragment_merges(
-                audio_path=path,
-                transcript=transcript,
-                named_labels=named_labels,
-            ):
-                if frag["speaker_label"] not in claimed:
-                    matches.append(frag)
-                    claimed.add(frag["speaker_label"])
-        except Exception:
-            logger.exception(f"[{meeting_id}] fragment merge failed")
 
     applied = list(applied_splits)
     for match in matches:
@@ -650,33 +624,6 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):
             identified_as=new_name,
             confidence=match.get("confidence") or 0.0,
         )
-        if path and match.get("source") in (
-            "introduction",
-            "greeting",
-            "fragment_merge",
-            "fragment_merge_weak",
-            "turn_taking",
-        ):
-            ranges = store.speaker_time_ranges(
-                meeting_id, speaker=new_name, speaker_label=match["speaker_label"]
-            )
-            if ranges:
-
-                def _enroll(name=new_name, segs=ranges):
-                    try:
-                        enroll_from_meeting_audio(
-                            _identifier(),
-                            audio_path=path,
-                            segments=segs,
-                            name=name,
-                            overwrite=False,
-                        )
-                    except Exception:
-                        logger.exception(
-                            f"[{meeting_id}] auto-enroll after label failed"
-                        )
-
-                background_tasks.add_task(_enroll)
         applied.append(match)
 
     meeting = store.get_meeting(meeting_id)

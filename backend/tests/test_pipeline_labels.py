@@ -34,7 +34,9 @@ class _FakeIdentifier:
 
 def test_finalize_labels_remaps_all_lines_for_a_cluster():
     centroid = np.array([1.0, 0.0, 0.0], dtype=np.float32)
-    identifier = _FakeIdentifier({(1.0, 0.0, 0.0): ("Laxmi", 0.98)})
+    # An enrolled voice match must not supply the name. Only the spoken
+    # introduction does.
+    identifier = _FakeIdentifier({(1.0, 0.0, 0.0): ("SomeoneElse", 0.98)})
     session = MeetingSession("MTG-test", identifier)
     session.diarizer.clusters["Speaker_00"] = {"centroid": centroid, "count": 5}
     session.transcript = [
@@ -43,7 +45,7 @@ def test_finalize_labels_remaps_all_lines_for_a_cluster():
             "speaker_label": "Speaker_00",
             "identified_as": "Unknown",
             "confidence": 0.4,
-            "text": "hello",
+            "text": "Hello, my name is Laxmi.",
         },
         {
             "speaker": "Speaker_00",
@@ -59,16 +61,9 @@ def test_finalize_labels_remaps_all_lines_for_a_cluster():
     for entry in session.transcript:
         assert entry["speaker"] == "Laxmi"
         assert entry["identified_as"] == "Laxmi"
-        assert entry["confidence"] == 0.98
+        assert entry["confidence"] == 1.0
         assert entry["speaker_label"] == "Speaker_00"
-        assert entry["text"] in ("hello", "world")
-
-    # This used to also assert that finalize permanently enrolled the voice.
-    # That enrollment was removed deliberately — writing every name resolved
-    # inside a meeting into the shared voice database contaminated it, so a
-    # mislabelled cluster in one meeting went on to mislabel later ones. The
-    # subject of this test is the label remapping above; enrollment is no
-    # longer part of it.
+        assert entry["text"] in ("Hello, my name is Laxmi.", "world")
 
 
 def test_finalize_labels_keeps_generic_label_when_unknown():
@@ -93,7 +88,7 @@ def test_finalize_labels_keeps_generic_label_when_unknown():
 
 
 def test_finalize_merges_same_voice_split_across_clusters():
-    """Speaker_02 that is really Anushka (close centroid) must become Anushka."""
+    """A similar voice does not copy a name onto a speaker who never said one."""
     anushka = np.array([1.0, 0.0, 0.0], dtype=np.float32)
     # Slightly drifted but still the same voice (> 0.50 cosine similarity).
     fragment = np.array([0.95, 0.1, 0.0], dtype=np.float32)
@@ -122,8 +117,10 @@ def test_finalize_merges_same_voice_split_across_clusters():
 
     session.finalize_labels()
 
-    assert session.transcript[0]["speaker"] == "Anushka"
-    assert session.transcript[1]["speaker"] == "Anushka"
+    assert session.transcript[0]["speaker"] == "Speaker_00"
+    # Named by the reply-to-greeting rule ("Good morning Lakshmi" -> next
+    # speaker), never by the similar-sounding enrolled voice "Anushka".
+    assert session.transcript[1]["speaker"] == "Lakshmi"
     assert session.transcript[1]["speaker_label"] == "Speaker_02"
 
 
@@ -156,7 +153,7 @@ def test_finalize_repairs_collapsed_greeting_reply():
 
     session.finalize_labels()
 
-    assert session.transcript[0]["speaker"] == "Vaishnavi"
+    assert session.transcript[0]["speaker"] == "Speaker_00"
     assert session.transcript[0]["speaker_label"] == "Speaker_00"
     assert session.transcript[1]["speaker"] == "Lakshmi"
     assert session.transcript[1]["speaker_label"] == "Speaker_01"

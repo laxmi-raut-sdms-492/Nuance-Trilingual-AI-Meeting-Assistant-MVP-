@@ -28,6 +28,18 @@ const STATUS_PILL = {
 /** Devanagari needs its own face and looser leading than Latin at 16px. */
 const isDevanagari = (code) => code === 'hi' || code === 'mr'
 
+// A name, acronym, or a couple of mislabeled seconds is not "the speaker
+// is using this language". Show a language only when it is a real share
+// of the meeting.
+const SPOKEN_LANGUAGE_MIN_PCT = 10
+
+function spokenLanguages(languages) {
+  const list = languages || []
+  if (list.length <= 1) return list
+  const spoken = list.filter((l) => (l.pct || 0) >= SPOKEN_LANGUAGE_MIN_PCT)
+  return spoken.length > 0 ? spoken : [list[0]]
+}
+
 function isGenericSpeaker(name) {
   return /^speaker[_\s]?\d+$/i.test(String(name || '').trim())
 }
@@ -692,9 +704,11 @@ export default function MeetingDetails() {
                   </MetaChip>
                 ) : null
               })()}
-              {meeting.languages?.length > 0 && (
+              {spokenLanguages(meeting.languages).length > 0 && (
                 <MetaChip icon="translate">
-                  {meeting.languages.map((l) => l.code.toUpperCase()).join(', ')}
+                  {spokenLanguages(meeting.languages)
+                    .map((l) => l.code.toUpperCase())
+                    .join(', ')}
                 </MetaChip>
               )}
               {meeting.processingMode && (
@@ -1265,9 +1279,9 @@ export default function MeetingDetails() {
           </SidePanel>
 
           <SidePanel icon="translate" title="Languages">
-            {meeting.languages?.length > 0 ? (
+            {spokenLanguages(meeting.languages).length > 0 ? (
               <div className="flex flex-col gap-3">
-                {meeting.languages.map((l) => (
+                {spokenLanguages(meeting.languages).map((l) => (
                   <div key={l.code}>
                     <div className="flex items-center justify-between font-meta-data text-meta-data">
                       <span className="text-text-primary">{l.name}</span>
@@ -1367,8 +1381,8 @@ function downloadTranscript(meeting) {
     meeting.title,
     `Uploaded: ${meeting.date} ${meeting.time}`,
     meeting.agenda ? `Agenda: ${meeting.agenda}` : null,
-    meeting.languages?.length
-      ? `Languages: ${meeting.languages.map((l) => `${l.name} ${l.pct}%`).join(', ')}`
+    spokenLanguages(meeting.languages).length
+      ? `Languages: ${spokenLanguages(meeting.languages).map((l) => `${l.name} ${l.pct}%`).join(', ')}`
       : null,
     '',
   ]

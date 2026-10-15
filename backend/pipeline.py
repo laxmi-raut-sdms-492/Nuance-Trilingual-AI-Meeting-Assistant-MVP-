@@ -54,6 +54,7 @@ from models.lcd import split_on_language_change
 from models.identifier import SpeakerIdentifier
 from models.name_hints import (
     extract_self_introduction_name,
+    line_can_name_a_speaker,
     resolve_names_from_greetings,
 )
 from models.speaker_matcher import UNKNOWN
@@ -249,99 +250,31 @@ class MeetingSession:
 
     def finalize_labels(self) -> None:
         """
-        Resolve display names for every diarization label, then permanently
-        enroll those voices.
+        Fill a display name only when that name is spoken in the transcript.
 
-        Order matters:
-          1) match against already-enrolled profiles
-          2) apply text hints (self-intro / mutual greetings)
-          3) enroll resolved voices
-          4) re-match leftover Speaker_XX against enrollments (just updated)
-          5) merge same-meeting fragments (Speaker_02 ≈ Anushka's Speaker_00)
-
-        Diarization ids stay on speaker_label; only display fields change.
+        A self-introduction ("my name is Anushka") names that speaker.
+        A mutual greeting ("Good morning Lakshmi" / "Good morning Anushka")
+        names both speakers from the names that were said. Saved voice
+        profiles are not used, so an unspoken speaker stays Speaker_00,
+        Speaker_01, and so on.
         """
         if not self.transcript:
             return
 
-        from config import WITHIN_MEETING_MERGE_SIMILARITY
-        from models.speaker_matcher import cosine_similarity
-
         # label -> (name, confidence)
         resolved: dict[str, tuple[str, float]] = {}
 
-        if self.diarizer.clusters:
-            matches: list[tuple[float, str, str]] = []
-            for label in self.diarizer.clusters:
-                name, conf = self.identifier.identify(self.diarizer.get_centroid(label))
-                if name != UNKNOWN:
-                    matches.append((conf, label, name))
-            matches.sort(key=lambda item: item[0], reverse=True)
-            used_names: set[str] = set()
-            for conf, label, name in matches:
-                if name not in used_names:
-                    resolved[label] = (name, conf)
-                    used_names.add(name)
-
-        # Text hints for labels still unknown.
         for entry in self.transcript:
             label = entry.get("speaker_label")
-            if not label or label in resolved:
+            if not label or label in resolved or not line_can_name_a_speaker(entry):
                 continue
             hint = extract_self_introduction_name(entry.get("text") or "")
             if hint:
                 resolved[label] = (hint, 1.0)
 
-        for label, name in resolve_names_from_greetings(self.transcript).items():
+        reliable = [entry for entry in self.transcript if line_can_name_a_speaker(entry)]
+        for label, name in resolve_names_from_greetings(reliable).items():
             resolved.setdefault(label, (name, 1.0))
-
-        # Same-meeting fragment repair via embeddings.
-        if self.diarizer.clusters:
-            named = {
-                label: (name, conf)
-                for label, (name, conf) in resolved.items()
-                if label in self.diarizer.clusters
-            }
-            for label in self.diarizer.clusters:
-                if label in resolved:
-                    continue
-                best_name, best_sim = None, -1.0
-                centroid = self.diarizer.get_centroid(label)
-                for other, (name, conf) in named.items():
-                    sim = cosine_similarity(centroid, self.diarizer.get_centroid(other))
-                    if sim > best_sim:
-                        best_name, best_sim = name, sim
-                if best_name and best_sim >= WITHIN_MEETING_MERGE_SIMILARITY:
-                    resolved[label] = (best_name, round(float(best_sim), 3))
-                    logger.info(
-                        f"within-meeting merge: {label} -> {best_name} "
-                        f"(sim={best_sim:.3f} vs named cluster)"
-                    )
-
-        # Turn-taking / continuity for short leftovers embeddings couldn't resolve.
-        from models.speaker_enrollment import same_meeting_fragment_merges
-
-        named_for_merge = {label: name for label, (name, _) in resolved.items()}
-        # Also include humans already on the transcript.
-        for entry in self.transcript:
-            label = entry.get("speaker_label")
-            speaker = entry.get("speaker")
-            if label and speaker and label in resolved:
-                named_for_merge[label] = resolved[label][0]
-            elif label and speaker and not re.match(r"(?i)^speaker[_\s]?\d+$", str(speaker)):
-                named_for_merge.setdefault(label, speaker)
-
-        for frag in same_meeting_fragment_merges(
-            audio_path=None,
-            transcript=self.transcript,
-            named_labels=named_for_merge,
-        ):
-            label = frag["speaker_label"]
-            if label not in resolved:
-                resolved[label] = (frag["identified_as"], frag["confidence"])
-                logger.info(
-                    f"{frag['source']}: {label} -> {frag['identified_as']}"
-                )
 
         for entry in self.transcript:
             if entry.get("is_overlap"):
@@ -351,10 +284,6 @@ class MeetingSession:
                 for lab, spk in zip(c_labels, c_speakers if len(c_speakers) == len(c_labels) else c_labels):
                     if lab in resolved:
                         resolved_candidates.append(resolved[lab][0])
-                    elif spk in resolved:
-                        resolved_candidates.append(resolved[spk][0])
-                    elif not _is_generic(str(spk)):
-                        resolved_candidates.append(spk)
                     else:
                         resolved_candidates.append(lab)
                 if resolved_candidates:
@@ -372,17 +301,9 @@ class MeetingSession:
                 entry["confidence"] = conf
                 entry["speaker"] = name
             else:
-                # Keep prior human names; only fall back to diarization id when
-                # still generic / unknown.
-                current = entry.get("speaker") or label
-                identified = entry.get("identified_as") or UNKNOWN
-                if identified != UNKNOWN and not _is_generic(str(identified)):
-                    entry["speaker"] = identified
-                elif not _is_generic(str(current)):
-                    entry["speaker"] = current
-                else:
-                    entry["identified_as"] = UNKNOWN
-                    entry["speaker"] = label
+                # A name that was not spoken stays off the transcript.
+                entry["identified_as"] = UNKNOWN
+                entry["speaker"] = label
 
         # Under-split repair: greeting reply glued onto the greeter
         # (e.g. both lines labeled Vaishnavi; second is Lakshmi answering).
@@ -589,9 +510,7 @@ class MeetingSession:
                     cluster_embs = self.diarizer.get_embeddings(lab)
                     if len(cluster_embs) < 2 and len(self.diarizer.clusters) > 1:
                         continue
-                    st_emb = self.diarizer.get_centroid(lab)
-                    disp, _ = self.identifier.identify(st_emb)
-                    name = disp if disp != UNKNOWN else lab
+                    name = lab
                 else:
                     name = lab
 
@@ -610,8 +529,8 @@ class MeetingSession:
                 is_overlap = False
                 speaker_label = candidate_labels[0]
                 stable_embedding = self.diarizer.get_centroid(speaker_label) if speaker_label in self.diarizer.clusters else embedding
-                identified_as, confidence = self.identifier.identify(stable_embedding)
-                display_name = identified_as if identified_as != UNKNOWN else candidate_speakers[0]
+                identified_as, confidence = UNKNOWN, 0.0
+                display_name = candidate_speakers[0]
                 candidate_speakers = [display_name]
             else:
                 display_name = " + ".join(candidate_speakers)
@@ -623,8 +542,10 @@ class MeetingSession:
             stable_embedding = self.diarizer.get_centroid(speaker_label)
             if stable_embedding is None:
                 stable_embedding = embedding
-            identified_as, confidence = self.identifier.identify(stable_embedding)
-            candidate_speakers = [identified_as if identified_as != UNKNOWN else speaker_label]
+            # Voice profiles do not name anyone. A spoken name is applied
+            # after transcription; until then the label stays Speaker_XX.
+            identified_as, confidence = UNKNOWN, 0.0
+            candidate_speakers = [speaker_label]
 
         if is_overlap and len(candidate_labels) >= 2:
             attributed_entry = self._attribute_overlap(
@@ -822,18 +743,12 @@ class MeetingSession:
 
         self._language_counts[asr["language"]] = self._language_counts.get(asr["language"], 0) + 1
 
-        if identified_as == UNKNOWN:
+        if identified_as == UNKNOWN and line_can_name_a_speaker(asr):
             hint = extract_self_introduction_name(asr["text"])
             if hint:
                 identified_as = hint
                 confidence = 1.0
-                try:
-                    self.identifier.enroll(hint, stable_embedding, overwrite=False)
-                    logger.info(
-                        f"[{start:.1f}s] auto-enrolled '{hint}' from self-introduction"
-                    )
-                except Exception as exc:
-                    logger.warning(f"[{start:.1f}s] auto-enroll '{hint}' failed: {exc}")
+                logger.info(f"[{start:.1f}s] named '{hint}' from self-introduction")
 
         display_name = identified_as if identified_as != UNKNOWN else speaker_label
         raw_text = asr["text"]
@@ -1010,11 +925,18 @@ class MeetingSession:
                 total_letters = dev_count + lat_count
                 dev_ratio = dev_count / total_letters
                 lat_ratio = lat_count / total_letters
-
-                indic_code = primary_code if primary_code in ("hi", "mr") else "mr"
-
-                totals[indic_code] = totals.get(indic_code, 0.0) + (dur * dev_ratio)
-                totals["en"] = totals.get("en", 0.0) + (dur * lat_ratio)
+                # A Marathi sentence that names "Pune" or "SI" is still
+                # Marathi. Split only when both scripts are a real share
+                # of the line.
+                if dev_ratio >= 0.2 and lat_ratio >= 0.2:
+                    indic_code = primary_code if primary_code in ("hi", "mr") else "mr"
+                    totals[indic_code] = totals.get(indic_code, 0.0) + (dur * dev_ratio)
+                    totals["en"] = totals.get("en", 0.0) + (dur * lat_ratio)
+                elif dev_ratio >= lat_ratio:
+                    indic_code = primary_code if primary_code in ("hi", "mr") else "mr"
+                    totals[indic_code] = totals.get(indic_code, 0.0) + dur
+                else:
+                    totals["en"] = totals.get("en", 0.0) + dur
             else:
                 totals[primary_code] = totals.get(primary_code, 0.0) + dur
 
@@ -1022,7 +944,7 @@ class MeetingSession:
         if grand_total <= 0:
             return []
 
-        return [
+        rows = [
             {
                 "code": code,
                 "name": LANGUAGE_NAMES.get(code, code),
@@ -1032,6 +954,10 @@ class MeetingSession:
             for code, seconds in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
             if seconds > 0.05
         ]
+        # Drop a language that is only a brief mislabel. Keep it when it is
+        # at least 10% of the speech, and always keep the main language.
+        spoken = [row for row in rows if row["pct"] >= 10]
+        return spoken or rows[:1]
 
     def spoken_duration(self) -> float:
         """Total seconds of actual speech (not wall-clock file length)."""

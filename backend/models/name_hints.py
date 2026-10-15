@@ -33,6 +33,8 @@ _LATIN_NAME = r"([A-Za-z][A-Za-z'-]{1,40})"
 _DEVANAGARI_NAME = r"([\u0900-\u097F][\u0900-\u097F\-]{1,30})"
 
 _ADDRESSEE_PATTERNS = (
+    # "how are you Anushka?" — the name closes the question.
+    re.compile(rf"\bhow\s+are\s+you,?\s+{_LATIN_NAME}\s*(?:[?.!,]|$)", re.IGNORECASE),
     re.compile(rf"\b{_GREETING_PREFIX}\s+{_LATIN_NAME}\b", re.IGNORECASE),
     re.compile(rf"{_GREETING_PREFIX}\s+{_DEVANAGARI_NAME}"),
 )
@@ -65,6 +67,10 @@ FORBIDDEN_NAME_WORDS = {
     "too",
     "also",
     "welcome",
+    "how",
+    "doing",
+    "fine",
+    "good",
 }
 
 
@@ -77,6 +83,22 @@ def _normalize_person_name(raw: str) -> str | None:
     if re.search(r"[A-Za-z]", raw):
         return raw.title()
     return raw
+
+
+# A weak or fallback line is not someone saying their name.
+SPOKEN_NAME_MIN_PROB = 0.6
+
+
+def line_can_name_a_speaker(line: dict) -> bool:
+    """True when this line is reliable enough to assign a person's name."""
+    if not line or line.get("language_fallback"):
+        return False
+    if "language_prob" not in line or line.get("language_prob") is None:
+        return True
+    try:
+        return float(line["language_prob"]) >= SPOKEN_NAME_MIN_PROB
+    except (TypeError, ValueError):
+        return False
 
 
 def extract_self_introduction_name(text: str) -> str | None:
@@ -123,6 +145,8 @@ def resolve_names_from_greetings(transcript: list[dict]) -> dict[str, str]:
     # label -> first greeted name we saw from that label
     greeted: dict[str, str] = {}
     for line in transcript or []:
+        if not line_can_name_a_speaker(line):
+            continue
         label = line.get("speaker_label") or line.get("speaker")
         if not label or label in greeted:
             continue
@@ -130,11 +154,11 @@ def resolve_names_from_greetings(transcript: list[dict]) -> dict[str, str]:
         if name:
             greeted[label] = name
 
-    if len(greeted) < 2:
-        return {}
-
     labels = list(greeted.keys())
     assignment: dict[str, str] = {}
+
+    if len(greeted) < 2:
+        return resolve_names_from_reply_turns(transcript)
 
     for i, label_a in enumerate(labels):
         for label_b in labels[i + 1 :]:
@@ -151,7 +175,99 @@ def resolve_names_from_greetings(transcript: list[dict]) -> dict[str, str]:
             elif label_b in assignment and assignment[label_b] == name_b and label_a not in assignment:
                 assignment[label_a] = name_a
 
+    for label, name in resolve_names_from_reply_turns(transcript).items():
+        if label not in assignment and name not in assignment.values():
+            assignment[label] = name
+
     return assignment
+
+
+# A reply this long after the greeting is no longer "immediately".
+REPLY_MAX_GAP_SECONDS = 20.0
+
+
+def resolve_names_from_reply_turns(transcript: list[dict]) -> dict[str, str]:
+    """
+    A greeting that uses a name is answered by that person.
+
+      Speaker_00: "Hi, how are you Anushka?"
+      Speaker_01: "Hi, I am fine."      → Speaker_01 = Anushka
+
+    Only the speaker who replies immediately after the greeting, under a
+    different label, gets the name. Nobody else is named by this rule.
+    """
+    lines = sorted(
+        (t for t in (transcript or []) if not t.get("is_overlap")),
+        key=lambda t: float(t.get("start_sec") or 0),
+    )
+    assignment: dict[str, str] = {}
+    for i, line in enumerate(lines[:-1]):
+        greeter = line.get("speaker_label") or line.get("speaker")
+        name = extract_greeted_name(line.get("text") or "")
+        if not greeter or not name or " + " in str(greeter):
+            continue
+        reply = lines[i + 1]
+        replier = reply.get("speaker_label") or reply.get("speaker")
+        if not replier or replier == greeter or " + " in str(replier):
+            continue
+        gap = float(reply.get("start_sec") or 0) - float(line.get("end_sec") or 0)
+        if gap > REPLY_MAX_GAP_SECONDS:
+            continue
+        if replier not in assignment and name not in assignment.values():
+            assignment[str(replier)] = name
+    return assignment
+
+
+def spoken_names_by_label(transcript: list[dict]) -> dict[str, str]:
+    """Diarization label -> name, only when that name was spoken reliably."""
+    found: dict[str, str] = {}
+    for line in transcript or []:
+        if not line_can_name_a_speaker(line):
+            continue
+        label = line.get("speaker_label")
+        if not label or " + " in str(label) or label in found:
+            continue
+        hint = extract_self_introduction_name(line.get("text") or "")
+        if hint:
+            found[str(label)] = hint
+    reliable = [line for line in (transcript or []) if line_can_name_a_speaker(line)]
+    for label, name in resolve_names_from_greetings(reliable).items():
+        found.setdefault(str(label), name)
+    return found
+
+
+def names_without_speech(transcript: list[dict]) -> list[tuple[str, str]]:
+    """
+    (display name, speaker label) pairs that were filled in without anyone
+    saying that name. The display name should go back to the speaker label.
+    """
+    justified = spoken_names_by_label(transcript)
+    generic = re.compile(r"(?i)^speaker[_\s]?\d+$")
+    seen: set[tuple[str, str]] = set()
+    out: list[tuple[str, str]] = []
+    for line in transcript or []:
+        label = str(line.get("speaker_label") or "")
+        display = str(line.get("speaker") or "")
+        label_parts = [part.strip() for part in label.split("+")]
+        display_parts = [part.strip() for part in display.split("+")]
+        pairs = (
+            list(zip(label_parts, display_parts))
+            if len(label_parts) == len(display_parts) and label_parts
+            else [(label, display)]
+        )
+        for lab, disp in pairs:
+            if not lab or not disp or generic.match(disp):
+                continue
+            if not generic.match(lab):
+                continue
+            wanted = justified.get(lab)
+            if wanted and wanted.lower() == disp.lower():
+                continue
+            key = (disp, lab)
+            if key not in seen:
+                seen.add(key)
+                out.append(key)
+    return out
 
 
 def repair_collapsed_greeting_turns(transcript: list[dict]) -> list[dict]:

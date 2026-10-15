@@ -938,6 +938,14 @@ export default function MeetingDetails() {
                                   {t.language_fallback ? '?' : ''}
                                 </span>
                               )}
+                              {t.is_unclear && (
+                                <span
+                                  title={`May be misheard: ${t.unclear_reason}`}
+                                  className="px-1.5 py-0.5 border border-processing/40 text-processing rounded text-[10px] font-bold tracking-wider ml-1"
+                                >
+                                  UNCLEAR
+                                </span>
+                              )}
                               {t.language_mix && t.language_mix.length > 1 && (
                                 <span
                                   title={`Mixed: ${t.language_mix.join(', ')}`}

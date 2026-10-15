@@ -46,6 +46,7 @@ from config import (
     SARVAM_TIMEOUT_SECONDS,
 )
 from stt.base import STTAdapter, STTProviderError
+from stt.script_guard import has_foreign_script, is_garbled, strip_foreign_script
 
 logger = logging.getLogger("stt.sarvam")
 
@@ -164,14 +165,35 @@ class SarvamSTTAdapter(STTAdapter):
         wav_bytes = _float32_to_wav_bytes(audio)
 
         # `unknown` lets Sarvam auto-detect. hint_language is the meeting's
-        # running dominant language (see pipeline.py); it is only a hint for
-        # local's own weak-detection fallback and is deliberately NOT forced
-        # here — locking every segment to the first-detected language is
-        # exactly the code-switching failure mode this app exists to avoid.
-        language_code = "unknown"
+        # running dominant language (see pipeline.py); it is not forced on the
+        # first attempt — locking every segment to the first-detected language
+        # is exactly the code-switching failure mode this app exists to avoid.
+        response = self._call(wav_bytes, "unknown")
+        if response is None:
+            return self._stamp(self._empty_result(hint_language))
 
+        if self._needs_forced_retry(response):
+            # Sarvam answered in a language we do not support (Urdu, Bengali,
+            # ...) or in a foreign script. That is a misdetection, so ask again
+            # with the language pinned to the meeting's own language.
+            forced = hint_language if hint_language in ALLOWED_LANGUAGES else "hi"
+            logger.info(
+                f"Sarvam answered {getattr(response, 'language_code', None)!r}; "
+                f"retrying forced to {forced!r}"
+            )
+            retry = self._call(wav_bytes, _TO_SARVAM_LANGUAGE[forced])
+            if retry is not None:
+                result = self._to_contract(retry, hint_language)
+                result["language"] = result["language_detected"] = forced
+                result["language_name"] = LANGUAGE_NAMES.get(forced, forced)
+                result["language_fallback"] = True
+                return self._stamp(self._sanitize(result, hint_language))
+
+        return self._stamp(self._sanitize(self._to_contract(response, hint_language), hint_language))
+
+    def _call(self, wav_bytes: bytes, language_code: str):
         try:
-            response = self._client.speech_to_text.transcribe(
+            return self._client.speech_to_text.transcribe(
                 file=("segment.wav", wav_bytes, "audio/wav"),
                 model=SARVAM_STT_MODEL,
                 mode=SARVAM_STT_MODE,
@@ -183,9 +205,29 @@ class SarvamSTTAdapter(STTAdapter):
             # Cloud STT stays on Sarvam. A failed segment is skipped rather
             # than transcribed by Whisper or IndicConformer.
             logger.warning(f"Sarvam STT failed ({exc}); this segment stays on Sarvam and is skipped")
-            return self._stamp(self._empty_result(hint_language))
+            return None
 
-        return self._stamp(self._to_contract(response, hint_language))
+    @staticmethod
+    def _needs_forced_retry(response) -> bool:
+        text = (getattr(response, "transcript", None) or "").strip()
+        if not text:
+            return False
+        raw_lang = getattr(response, "language_code", None)
+        unsupported = bool(raw_lang) and raw_lang not in _FROM_SARVAM_LANGUAGE
+        return unsupported or has_foreign_script(text)
+
+    @staticmethod
+    def _sanitize(result: dict, hint_language: str | None) -> dict:
+        """Last line of defence: never return text in an unsupported script."""
+        text = result.get("text") or ""
+        if not has_foreign_script(text):
+            return result
+        if is_garbled(text):
+            logger.info(f"dropping garbled foreign-script transcript: {text[:60]!r}")
+            result["text"] = ""
+        else:
+            result["text"] = strip_foreign_script(text)
+        return result
 
     def _to_contract(self, response, hint_language: str | None) -> dict:
         text = (getattr(response, "transcript", None) or "").strip()

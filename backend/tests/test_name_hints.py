@@ -1,6 +1,6 @@
 """Tests for self-introduction name extraction."""
 
-from models.name_hints import extract_self_introduction_name
+from models.name_hints import extract_greeted_name, extract_self_introduction_name
 from models.speaker_enrollment import introduction_labels_from_transcript
 
 
@@ -264,3 +264,27 @@ def test_how_are_you_without_a_name_names_nobody():
         {"speaker_label": "Speaker_01", "start_sec": 3.5, "end_sec": 6, "text": "Hi, I am fine."},
     ]
     assert resolve_names_from_greetings(transcript) == {}
+
+
+def test_greeted_name_after_filler_words():
+    assert extract_greeted_name("And hi, how are you doing today Rahul?") == "Rahul"
+
+
+def test_greeted_name_written_in_devanagari_inside_english():
+    assert extract_greeted_name("Hi How are you अनुष्का?") == "अनुष्का"
+
+
+def test_how_are_you_doing_without_name_names_nobody():
+    assert extract_greeted_name("Hi, how are you doing today?") is None
+
+
+def test_unreliable_greeting_line_does_not_name_the_reply():
+    from models.name_hints import resolve_names_from_reply_turns
+
+    def line(label, start, end, text, prob):
+        return {"speaker_label": label, "start_sec": start, "end_sec": end, "text": text, "language_prob": prob}
+
+    noisy = [line("Speaker_00", 0, 2, "Hi, how are you Visha?", 0.30), line("Speaker_01", 2.5, 5, "I am fine.", 0.95)]
+    clear = [line("Speaker_00", 0, 2, "Hi, how are you Visha?", 0.95), line("Speaker_01", 2.5, 5, "I am fine.", 0.95)]
+    assert resolve_names_from_reply_turns(noisy) == {}
+    assert resolve_names_from_reply_turns(clear) == {"Speaker_01": "Visha"}

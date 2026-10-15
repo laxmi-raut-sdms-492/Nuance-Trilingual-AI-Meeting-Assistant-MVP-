@@ -32,9 +32,14 @@ _GREETING_PREFIX = (
 _LATIN_NAME = r"([A-Za-z][A-Za-z'-]{1,40})"
 _DEVANAGARI_NAME = r"([\u0900-\u097F][\u0900-\u097F\-]{1,30})"
 
+# "how are you doing today <name>" — optional filler between the question and the name.
+_HOW_ARE_YOU_FILLER = r"(?:\s+doing)?(?:\s+(?:today|this\s+morning|these\s+days|now))?"
+
 _ADDRESSEE_PATTERNS = (
     # "how are you Anushka?" — the name closes the question.
-    re.compile(rf"\bhow\s+are\s+you,?\s+{_LATIN_NAME}\s*(?:[?.!,]|$)", re.IGNORECASE),
+    re.compile(rf"\bhow\s+are\s+you{_HOW_ARE_YOU_FILLER},?\s+{_LATIN_NAME}\s*(?:[?.!,]|$)", re.IGNORECASE),
+    # The STT may write the name in Devanagari even inside an English sentence.
+    re.compile(rf"\bhow\s+are\s+you{_HOW_ARE_YOU_FILLER},?\s+{_DEVANAGARI_NAME}", re.IGNORECASE),
     re.compile(rf"\b{_GREETING_PREFIX}\s+{_LATIN_NAME}\b", re.IGNORECASE),
     re.compile(rf"{_GREETING_PREFIX}\s+{_DEVANAGARI_NAME}"),
 )
@@ -203,6 +208,10 @@ def resolve_names_from_reply_turns(transcript: list[dict]) -> dict[str, str]:
     assignment: dict[str, str] = {}
     for i, line in enumerate(lines[:-1]):
         greeter = line.get("speaker_label") or line.get("speaker")
+        # A low-confidence or fallback-language line is often STT noise ("Hi Visha."
+        # inside a Marathi meeting) and must not hand out a name.
+        if not line_can_name_a_speaker(line):
+            continue
         name = extract_greeted_name(line.get("text") or "")
         if not greeter or not name or " + " in str(greeter):
             continue

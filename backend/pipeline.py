@@ -52,6 +52,7 @@ from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
 from models.lcd import split_on_language_change
 from models.identifier import SpeakerIdentifier
+from stt.script_guard import has_foreign_script, is_garbled, strip_foreign_script
 from models.name_hints import (
     extract_self_introduction_name,
     line_can_name_a_speaker,
@@ -718,6 +719,11 @@ class MeetingSession:
             )
         else:
             asr = self.stt_adapter.transcribe(audio, hint_language=hint)
+        if asr["text"] and has_foreign_script(asr["text"]):
+            if is_garbled(asr["text"]):
+                logger.info(f"[{start:.1f}-{end:.1f}s] dropping garbled foreign-script text: {asr['text'][:60]!r}")
+                return None
+            asr["text"] = strip_foreign_script(asr["text"])
         if not asr["text"]:
             return None
 
@@ -730,6 +736,7 @@ class MeetingSession:
         }
         if duration < 1.8 and text_clean in FILLER_HALLUCINATIONS:
             logger.info(f"[{start:.1f}-{end:.1f}s] dropping STT noise hallucination: {asr['text']!r}")
+            return None
         # Guard against hallucinated non-supported languages (e.g. Kannada 'kn') on short/noisy clips
         from config import SUPPORTED_LANGUAGES
         if asr.get("language") not in SUPPORTED_LANGUAGES:

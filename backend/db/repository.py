@@ -13,6 +13,7 @@ session closes.
 
 from __future__ import annotations
 
+from models.clarity import mark_unclear
 import datetime as dt
 import logging
 import os
@@ -197,7 +198,7 @@ def _to_dict(meeting: Meeting) -> dict:
             }
             for s in meeting.speaker_stats
         ]),
-        "transcript": [
+        "transcript": mark_unclear([
             {
                 "start_sec": t.start_sec,
                 "end_sec": t.end_sec,
@@ -226,7 +227,7 @@ def _to_dict(meeting: Meeting) -> dict:
                 "text": t.cleaned_text or t.text,
             }
             for t in meeting.transcript_lines
-        ],
+        ]),
         # The two halves of this are not in tension: the title is what the card
         # shows and is shortened for it, while quote/sourceTime are the verbatim
         # transcript line the item was drawn from. Shortening the title is only

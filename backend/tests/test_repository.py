@@ -29,6 +29,11 @@ from db.session import session_scope
 # ------------------------------------------------------------------ round trip
 
 
+def _without_derived(transcript):
+    """is_unclear / unclear_reason are computed on read, not stored."""
+    return [{k: v for k, v in t.items() if k not in ("is_unclear", "unclear_reason")} for t in transcript]
+
+
 def test_add_and_get_round_trips_every_field():
     record = make_record()
     repo.add_meeting(record)
@@ -53,7 +58,7 @@ def test_add_and_get_round_trips_every_field():
     ):
         assert stored[field] == record[field], field
 
-    assert stored["transcript"] == record["transcript"]
+    assert _without_derived(stored["transcript"]) == record["transcript"]
     assert stored["speakerStats"] == record["speakerStats"]
     assert stored["languages"] == record["languages"]
 
@@ -198,7 +203,7 @@ def test_progress_update_does_not_touch_the_transcript():
 
     stored = repo.get_meeting(record["id"])
     assert stored["progress"] == 42
-    assert stored["transcript"] == record["transcript"]
+    assert _without_derived(stored["transcript"]) == record["transcript"]
     assert stored["speakerStats"] == record["speakerStats"]
     assert stored["languages"] == record["languages"]
 

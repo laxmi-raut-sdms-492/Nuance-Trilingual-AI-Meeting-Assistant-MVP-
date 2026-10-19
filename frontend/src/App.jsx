@@ -4,6 +4,9 @@ import { MeetingsProvider } from './context/MeetingsContext.jsx'
 import { UserProvider } from './context/UserContext.jsx'
 import { MembersProvider } from './context/MembersContext.jsx'
 import { ThemeProvider } from './context/ThemeContext.jsx'
+import { AuthProvider, useAuth } from './context/AuthContext.jsx'
+import Login from './pages/Login/Login.jsx'
+import Loader from './components/common/Loader.jsx'
 import Dashboard from './pages/Dashboard/Dashboard.jsx'
 import MeetingList from './pages/Meetings/MeetingList.jsx'
 import MeetingDetails from './pages/MeetingDetails/MeetingDetails.jsx'
@@ -12,10 +15,24 @@ import AnalyticsPage from './pages/Analytics/AnalyticsPage.jsx'
 import Settings from './pages/Settings/Settings.jsx'
 import NotFound from './pages/NotFound.jsx'
 
+/**
+ * Nothing behind the password mounts until it is given: the data providers
+ * sit inside this gate, so their first fetch happens signed in rather than
+ * failing with 401 and showing empty lists.
+ */
+function AuthGate({ children }) {
+  const { required, signedIn } = useAuth()
+  if (required === null) return <Loader label="Connecting..." />
+  if (!signedIn) return <Login />
+  return children
+}
+
 export default function App() {
   return (
     <ThemeProvider>
       <UserProvider>
+        <AuthProvider>
+        <AuthGate>
         <MembersProvider>
           <MeetingsProvider>
             <BrowserRouter>
@@ -24,8 +41,9 @@ export default function App() {
                   <Route path="/" element={<Navigate to="/dashboard" replace />} />
                   <Route path="/dashboard" element={<Dashboard />} />
 
-                  <Route path="/meetings" element={<MeetingList />} />
-                  <Route path="/meetings/trash" element={<MeetingList filter="trash" />} />
+                  {/* Keyed so page/filter state resets instead of leaking into Trash. */}
+                  <Route path="/meetings" element={<MeetingList key="all" />} />
+                  <Route path="/meetings/trash" element={<MeetingList key="trash" filter="trash" />} />
                   <Route path="/meetings/:id" element={<MeetingDetails />} />
 
                   <Route path="/upload" element={<UploadMeeting />} />
@@ -44,6 +62,8 @@ export default function App() {
             </BrowserRouter>
           </MeetingsProvider>
         </MembersProvider>
+        </AuthGate>
+        </AuthProvider>
       </UserProvider>
     </ThemeProvider>
   )

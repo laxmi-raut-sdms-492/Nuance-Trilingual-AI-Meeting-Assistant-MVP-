@@ -355,6 +355,13 @@ class SessionDiarizer:
             return False
 
         recent = self._candidates[-NEW_CLUSTER_EVIDENCE_COUNT:]
+        # Three "hi" / "ok" / "hmm" fragments are not evidence of a new
+        # voice: prints of sub-second clips scatter, and they agree with each
+        # other as often as with the real speaker. The group must hold at
+        # least one proper utterance's worth of speech before it can mint.
+        spoken = sum(float(c["end"]) - float(c["start"]) for c in recent) + (end - start)
+        if spoken < MIN_NEW_CLUSTER_SECONDS:
+            return False
         embs = np.stack([c["embedding"] for c in recent] + [embedding])
         # Candidate group must be internally consistent (same novel voice).
         internal = [

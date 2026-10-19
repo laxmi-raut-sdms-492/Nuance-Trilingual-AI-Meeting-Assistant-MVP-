@@ -28,10 +28,22 @@ export default function AudioRecorder({
   const streamRef = useRef(null)
   const timerRef = useRef(null)
   const secondsRef = useRef(0)
+  // Always the parent's latest handler. `onstop` is wired when recording
+  // starts; calling the prop captured then would hand the parent the form
+  // as it was at Record, not at Stop.
+  const onCompleteRef = useRef(onRecordingComplete)
+  onCompleteRef.current = onRecordingComplete
+  const cancelledRef = useRef(false)
 
   useEffect(() => {
+    cancelledRef.current = false
     return () => {
+      // Leaving the page cancels the take. Stopping the tracks alone ends
+      // the recorder too, and its onstop then uploaded the recording anyway.
+      cancelledRef.current = true
       clearInterval(timerRef.current)
+      const recorder = mediaRecorderRef.current
+      if (recorder && recorder.state !== 'inactive') recorder.stop()
       streamRef.current?.getTracks().forEach((t) => t.stop())
     }
   }, [])
@@ -76,9 +88,10 @@ export default function AudioRecorder({
       recorder.onstop = () => {
         const blob = new Blob(chunksRef.current, { type: recorder.mimeType || 'audio/webm' })
         streamRef.current?.getTracks().forEach((t) => t.stop())
-        setStatus('idle')
         stopTimer()
-        onRecordingComplete(blob, secondsRef.current)
+        if (cancelledRef.current) return
+        setStatus('idle')
+        onCompleteRef.current(blob, secondsRef.current)
         secondsRef.current = 0
         setSeconds(0)
       }

@@ -20,6 +20,7 @@ from config import (
     INDIC_DECODE_LANGUAGES,
     SAMPLE_RATE,
 )
+from models.model_lock import serialized
 
 logger = logging.getLogger("indic_conformer")
 
@@ -53,6 +54,7 @@ def _get_model():
     return _model
 
 
+@serialized
 def transcribe_indic(audio: np.ndarray, language: str) -> str:
     """
     Transcribe one float32 mono segment at SAMPLE_RATE.

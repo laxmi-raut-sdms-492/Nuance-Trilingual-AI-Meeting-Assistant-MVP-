@@ -308,8 +308,13 @@ OVERLAP_MIN_LINE_SECONDS = float(os.getenv("OVERLAP_MIN_LINE_SECONDS", "1.0"))
 # set HF_TOKEN. Without it the voice-print test above is used instead.
 OVERLAP_MODEL = os.getenv("OVERLAP_MODEL", "pyannote/segmentation-3.0")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
-# A line needs at least this much overlapping speech to be marked.
+# A line needs at least this much overlapping speech to be marked...
 OVERLAP_MIN_REGION_SECONDS = float(os.getenv("OVERLAP_MIN_REGION_SECONDS", "0.3"))
+# ...and that overlap must be a real part of the line: this share of it, or
+# OVERLAP_MIN_ABSOLUTE_SECONDS, whichever is smaller. A half-second "hmm"
+# inside someone's one-minute turn is not a line two people spoke.
+OVERLAP_MIN_SHARE = float(os.getenv("OVERLAP_MIN_SHARE", "0.10"))
+OVERLAP_MIN_ABSOLUTE_SECONDS = float(os.getenv("OVERLAP_MIN_ABSOLUTE_SECONDS", "2.0"))
 
 # --- Speaker turns (transcript readability) ---
 TURN_MERGE_MAX_GAP_SEC = float(os.getenv("TURN_MERGE_MAX_GAP_SEC", "2.5"))
@@ -322,6 +327,21 @@ TRANSCRIPT_CLEANUP_ENABLED = os.getenv("TRANSCRIPT_CLEANUP_ENABLED", "0").lower(
 TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS = int(
     os.getenv("TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS", "5")
 )
+
+# Offline speaker count (file uploads), models/offline_diarizer.decide_speakers.
+# Lines are grouped by voice print until the groups are farther apart than
+# this (average-linkage cosine distance); the number of groups left is the
+# speaker count. One person's own lines sit ~0.3-0.4 apart on a clean
+# recording, different people ~0.8+ (tools/DIARIZATION_FINDINGS.md).
+SPEAKER_SPLIT_DISTANCE = float(os.getenv("SPEAKER_SPLIT_DISTANCE", "0.55"))
+# Two groups whose overall voices are closer than this are one person.
+SAME_VOICE_CENTROID_DISTANCE = float(os.getenv("SAME_VOICE_CENTROID_DISTANCE", "0.40"))
+# Lines shorter than this do not vote on the count: their prints scatter.
+RELIABLE_LINE_SECONDS = float(os.getenv("RELIABLE_LINE_SECONDS", "1.0"))
+# A group with less speech than this is a stray print, not a participant.
+MIN_SPEAKER_SECONDS = float(os.getenv("MIN_SPEAKER_SECONDS", "4.0"))
+# ...or less than this share of the meeting's speech (capped at 20s).
+MIN_SPEAKER_SHARE = float(os.getenv("MIN_SPEAKER_SHARE", "0.05"))
 
 # Offline auto-k recluster (file uploads): ignore silhouette below this.
 OFFLINE_RECLUSTER_MIN_SILHOUETTE = float(
@@ -342,6 +362,11 @@ INCONCLUSIVE_MERGE_SIMILARITY = float(
 )
 # Collapsed dialogue repair (under-split): split consecutive same-label lines
 # when their embeddings differ by at least this cosine distance.
+# Off by default: it judges one pair of neighbouring lines at a time, and one
+# person's short reply differs from their long sentence by more than this, so
+# it invents speakers on solo recordings. The offline recluster decides the
+# speaker count from the whole meeting instead.
+COLLAPSED_SPLIT_ENABLED = os.getenv("COLLAPSED_SPLIT_ENABLED", "0").lower() in ("1", "true", "yes")
 COLLAPSED_SPLIT_DISTANCE = float(os.getenv("COLLAPSED_SPLIT_DISTANCE", "0.40"))
 
 # --- Identification ---
@@ -449,6 +474,13 @@ SARVAM_STT_MODE = os.getenv("SARVAM_STT_MODE", "transcribe")
 SARVAM_TIMEOUT_SECONDS = float(os.getenv("SARVAM_TIMEOUT_SECONDS", "30"))
 
 # --- Database ---
+# --- Access ---
+# One shared password in front of the whole API (see auth.py). Empty means
+# no sign-in, which is only acceptable when the server is reachable from
+# this machine alone — startup.sh binds 0.0.0.0, so set it on any shared
+# network.
+APP_PASSWORD = os.getenv("APP_PASSWORD", "").strip()
+
 # PostgreSQL. Override with DATABASE_URL in the environment; the default is a
 # local development role and is not a secret worth protecting, but do not reuse
 # it anywhere real.
@@ -457,7 +489,7 @@ SARVAM_TIMEOUT_SECONDS = float(os.getenv("SARVAM_TIMEOUT_SECONDS", "30"))
 # resolves to psycopg2) and not "postgresql+psycopg2".
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg://nuance:nuance_dev@localhost:5432/nuance",
+    "postgresql+psycopg://nuance:nuance_dev_pw@localhost:5432/nuance",
 )
 
 # Set SQL_ECHO=1 to log every statement. Useful when a query looks slow;

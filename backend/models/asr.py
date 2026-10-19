@@ -48,6 +48,7 @@ from config import (
     INDIC_DECODE_LANGUAGES,
 )
 from models.text_lang_id import classify_text_language, TEXT_LANG_MIN_CONFIDENCE
+from models.model_lock import serialized
 
 logger = logging.getLogger("asr")
 
@@ -183,6 +184,7 @@ def _try_indic_conformer_recovery(
     return current_text, current_language
 
 
+@serialized
 def transcribe(audio: np.ndarray, hint_language: str | None = None) -> dict:
     duration = len(audio) / SAMPLE_RATE
 
@@ -284,6 +286,7 @@ def _verify_language_from_text(text: str, language: str, redecode) -> tuple[str,
     return text, guess
 
 
+@serialized
 def transcribe_with_context(
     full_audio: np.ndarray,
     start_sec: float,

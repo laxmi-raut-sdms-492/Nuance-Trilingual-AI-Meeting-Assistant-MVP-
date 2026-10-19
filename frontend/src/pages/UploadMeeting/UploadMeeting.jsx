@@ -159,7 +159,16 @@ export default function UploadMeeting() {
       hour: '2-digit',
       minute: '2-digit',
     })}.${ext}`
-    await finishSave(new File([blob], name, { type: blob.type }))
+    const recording = new File([blob], name, { type: blob.type })
+    // A recording goes through the same checks as a file: without a title
+    // and agenda it is kept as the selected file, not sent half-described.
+    if (!validateDetails()) {
+      setFile(recording)
+      setMode('upload')
+      toast.error('Fill in the required details, then press Start Processing to save the recording.')
+      return
+    }
+    await finishSave(recording)
   }
 
   const reset = () => {

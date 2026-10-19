@@ -11,6 +11,15 @@ import { useMeetings } from '../../context/MeetingsContext.jsx'
 import { useMembers } from '../../context/MembersContext.jsx'
 import { useUser } from '../../context/UserContext.jsx'
 
+const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+// Chart columns, Monday first.
+const WEEK_ORDER = [1, 2, 3, 4, 5, 6, 0]
+
+// Local calendar date as YYYY-MM-DD (what <input type="date"> uses).
+// toISOString() would give the UTC date, which is off by one near midnight.
+const localDateKey = (d) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
 /**
  * Ported from the design export (dashboard_populated) and
  * dashboard_zero_data/ — the same component covers both, because every panel
@@ -114,32 +123,25 @@ export default function Dashboard() {
         return mDate.getMonth() === now.getMonth() && mDate.getFullYear() === now.getFullYear()
       }
       if (dateRange === 'custom' && customDate) {
-        const targetStr = new Date(customDate).toDateString()
-        return mDate.toDateString() === targetStr
+        return localDateKey(mDate) === customDate
       }
       return true
     })
   }, [meetings, dateRange, customDate])
 
+  // Buckets whatever passed the range filter by weekday, so "30 days" and
+  // "All time" actually differ from "7 days".
   const weeklyData = useMemo(() => {
-    const days = []
-    const today = new Date()
-    const todayStr = today.toDateString()
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(today)
-      d.setDate(today.getDate() - i)
-      const key = d.toDateString()
-      days.push({
-        key,
-        day: d.toLocaleDateString(undefined, { weekday: 'short' }),
-        isToday: key === todayStr,
-        meetings: 0,
-      })
-    }
+    const todayDow = new Date().getDay()
+    const days = WEEK_ORDER.map((dow) => ({
+      dow,
+      day: DAY_LABELS[dow],
+      isToday: dow === todayDow,
+      meetings: 0,
+    }))
     filteredMeetingsForChart.forEach((m) => {
       if (!m.uploadedAtISO) return
-      const key = new Date(m.uploadedAtISO).toDateString()
-      const bucket = days.find((d) => d.key === key)
+      const bucket = days.find((d) => d.dow === new Date(m.uploadedAtISO).getDay())
       if (bucket) bucket.meetings += 1
     })
     return days.map(({ day, isToday, meetings: count }) => ({ day, isToday, meetings: count }))
@@ -306,7 +308,7 @@ export default function Dashboard() {
               <div className="relative flex items-center">
                 <input
                   type="date"
-                  max={new Date().toISOString().split('T')[0]}
+                  max={localDateKey(new Date())}
                   value={customDate}
                   onChange={(e) => {
                     setCustomDate(e.target.value)

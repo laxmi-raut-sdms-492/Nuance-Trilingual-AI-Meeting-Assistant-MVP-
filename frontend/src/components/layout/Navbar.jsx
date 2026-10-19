@@ -4,6 +4,7 @@ import Icon from '../common/Icon.jsx'
 import Avatar from '../common/Avatar.jsx'
 import { useUser } from '../../context/UserContext.jsx'
 import { useTheme } from '../../context/ThemeContext.jsx'
+import { useAuth } from '../../context/AuthContext.jsx'
 import { useMeetings } from '../../context/MeetingsContext.jsx'
 
 /**
@@ -18,6 +19,7 @@ import { useMeetings } from '../../context/MeetingsContext.jsx'
 export default function Navbar() {
   const navigate = useNavigate()
   const { dark, toggleDark } = useTheme()
+  const { required: passwordRequired, logout } = useAuth()
   const { profile } = useUser()
   const { meetings } = useMeetings()
   const [query, setQuery] = useState('')
@@ -65,6 +67,17 @@ export default function Navbar() {
         >
           <Icon name="contrast" />
         </button>
+
+        {passwordRequired && (
+          <button
+            type="button"
+            onClick={logout}
+            className="text-text-muted hover:text-primary transition-colors opacity-80 hover:opacity-100 p-2 rounded-full hover:bg-surface-raised"
+            title="Sign out"
+          >
+            <Icon name="logout" />
+          </button>
+        )}
 
         <div className="relative">
           <button

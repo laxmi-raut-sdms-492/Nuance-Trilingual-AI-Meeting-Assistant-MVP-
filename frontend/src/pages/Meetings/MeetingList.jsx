@@ -216,6 +216,11 @@ export default function MeetingList({ filter }) {
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
   const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
+  // A delete, restore or purge can shrink the list under the current page.
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
   const confirmDelete = async () => {
     setDeleting(true)
     try {

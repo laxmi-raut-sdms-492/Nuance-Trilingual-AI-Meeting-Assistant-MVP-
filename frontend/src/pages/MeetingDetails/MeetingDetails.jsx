@@ -3,9 +3,10 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import toast from 'react-hot-toast'
 import Icon from '../../components/common/Icon.jsx'
 import EmptyState from '../../components/common/EmptyState.jsx'
+import Button from '../../components/common/Button.jsx'
 import Loader from '../../components/common/Loader.jsx'
 import AudioPlayer from '../../components/common/AudioPlayer.jsx'
-import { useMeetings } from '../../context/MeetingsContext.jsx'
+import { normalizeMeeting, useMeetings } from '../../context/MeetingsContext.jsx'
 import { meetingsApi, speakersApi, describeError } from '../../services/api.js'
 
 /**
@@ -481,6 +482,7 @@ export default function MeetingDetails() {
   const [meeting, setMeeting] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [loadError, setLoadError] = useState(null)
   const [activeTab, setActiveTab] = useState('Transcript')
   const [search, setSearch] = useState('')
   const [enrolledSpeakers, setEnrolledSpeakers] = useState([])
@@ -489,32 +491,38 @@ export default function MeetingDetails() {
   const [rebuildingSummary, setRebuildingSummary] = useState(false)
   const [audioCurrentTime, setAudioCurrentTime] = useState(0)
   const autoLabeledRef = useRef(false)
-  const lineRefs = useRef([])
+  const autoIdentifyPassesRef = useRef(0)
+  const activeLineRef = useRef(null)
 
-  const activeLineIndex = useMemo(() => {
-    if (!meeting?.transcript?.length || audioCurrentTime <= 0) return -1
-    return meeting.transcript.findIndex(
-      (t) => audioCurrentTime >= Number(t.start_sec || 0) && audioCurrentTime <= Number(t.end_sec || 0)
+  // The line object itself, not its index: the transcript is rendered through
+  // a search filter, so positions in the full list don't match the DOM.
+  const activeLine = useMemo(() => {
+    if (!meeting?.transcript?.length || audioCurrentTime <= 0) return null
+    return (
+      meeting.transcript.find(
+        (t) => audioCurrentTime >= Number(t.start_sec || 0) && audioCurrentTime <= Number(t.end_sec || 0)
+      ) || null
     )
   }, [meeting?.transcript, audioCurrentTime])
 
   useEffect(() => {
-    if (activeLineIndex >= 0 && lineRefs.current[activeLineIndex]) {
-      lineRefs.current[activeLineIndex].scrollIntoView({
-        behavior: 'smooth',
-        block: 'nearest',
-      })
-    }
-  }, [activeLineIndex])
+    activeLineRef.current?.scrollIntoView({
+      behavior: 'smooth',
+      block: 'nearest',
+    })
+  }, [activeLine])
 
   const load = useCallback(async () => {
     try {
       setMeeting(await fetchMeeting(id))
       setNotFound(false)
+      setLoadError(null)
     } catch (err) {
       if (err?.response?.status === 404) {
         setMeeting(null)
         setNotFound(true)
+      } else {
+        setLoadError(describeError(err))
       }
     } finally {
       setLoading(false)
@@ -534,6 +542,7 @@ export default function MeetingDetails() {
     setLoading(true)
     setMeeting(null)
     setNotFound(false)
+    setLoadError(null)
     autoLabeledRef.current = false
     load()
     loadEnrolled()
@@ -551,7 +560,7 @@ export default function MeetingDetails() {
   const handleImportAudio = useCallback(
     async (file, onUploadProgress) => {
       const { data } = await meetingsApi.uploadAudio(id, file, onUploadProgress)
-      setMeeting(data)
+      setMeeting(normalizeMeeting(data))
       setAudioVersion((v) => v + 1)
       toast.success('Audio imported. Transcription is running.')
       return data
@@ -581,10 +590,13 @@ export default function MeetingDetails() {
         const { data } = await meetingsApi.identifySpeakers(id)
         if (cancelled) return
         if (data?.meeting && (data.applied || []).length > 0) {
-          setMeeting(data.meeting)
+          setMeeting(normalizeMeeting(data.meeting))
           loadEnrolled()
-          // Allow another pass if some Speaker_XX remain after partial apply.
-          autoLabeledRef.current = false
+          // One follow-up pass at most. Re-arming on every non-empty
+          // `applied` kept this firing as long as any Speaker_XX remained,
+          // and each call re-runs the audio clustering on the server.
+          autoIdentifyPassesRef.current += 1
+          if (autoIdentifyPassesRef.current < 2) autoLabeledRef.current = false
         }
       } catch {
         // Stay silent — leave Speaker_XX if nothing could be resolved.
@@ -596,6 +608,28 @@ export default function MeetingDetails() {
   }, [meeting, id, loadEnrolled])
 
   if (loading) return <Loader label="Loading meeting..." />
+
+  // Only a 404 means "not found"; anything else (network, 500) is retryable.
+  if (!meeting && loadError && !notFound) {
+    return (
+      <EmptyState
+        icon="cloud_off"
+        title="Could not load meeting"
+        subtitle={loadError}
+        action={
+          <Button
+            icon="refresh"
+            onClick={() => {
+              setLoading(true)
+              load()
+            }}
+          >
+            Retry
+          </Button>
+        }
+      />
+    )
+  }
 
   if (notFound || !meeting) {
     return (
@@ -863,11 +897,11 @@ export default function MeetingDetails() {
                   <div className="flex flex-col gap-8">
                     {filteredTranscript.map((t, i) => {
                       const devanagari = isDevanagari(t.language)
-                      const isActive = i === activeLineIndex
+                      const isActive = t === activeLine
                       return (
                         <div
                           key={i}
-                          ref={(el) => (lineRefs.current[i] = el)}
+                          ref={isActive ? activeLineRef : undefined}
                           className={`flex gap-4 group p-3 rounded-lg transition-all ${
                             isActive
                               ? 'border-l-4 border-l-amber-500 bg-amber-500/10 shadow-sm ring-1 ring-amber-500/30'

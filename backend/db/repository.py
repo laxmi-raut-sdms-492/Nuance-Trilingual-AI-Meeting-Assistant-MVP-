@@ -16,6 +16,7 @@ from __future__ import annotations
 from models.clarity import mark_unclear
 from stt.script_guard import clean_transcript
 import datetime as dt
+import json
 import logging
 import os
 import re
@@ -223,6 +224,7 @@ def _to_dict(meeting: Meeting) -> dict:
                 "candidate_speakers": _split_language_mix(t.candidate_speakers),
                 "candidate_labels": _split_language_mix(t.candidate_labels),
                 "is_separated_overlap": bool(t.is_separated_overlap),
+                "overlap_seconds": t.overlap_seconds,
                 "separation_confidence": t.separation_confidence,
                 "attributed_spans": json.loads(t.attributed_spans) if t.attributed_spans else None,
                 "raw_text": t.raw_text,
@@ -341,6 +343,7 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 candidate_speakers=_join_language_mix(t.get("candidate_speakers")),
                 candidate_labels=_join_language_mix(t.get("candidate_labels")),
                 is_separated_overlap=bool(t.get("is_separated_overlap", False)),
+                overlap_seconds=(float(t["overlap_seconds"]) if t.get("overlap_seconds") is not None else None),
                 separation_confidence=t.get("separation_confidence"),
                 attributed_spans=json.dumps(t["attributed_spans"]) if isinstance(t.get("attributed_spans"), (list, dict)) else (t["attributed_spans"] if isinstance(t.get("attributed_spans"), str) else None),
                 raw_text=t.get("raw_text") or t.get("text", ""),
@@ -764,6 +767,14 @@ def reassign_transcript_lines(
                 used_ids.add(int(m.group(1)))
         next_id = (max(used_ids) + 1) if used_ids else 0
 
+        # One label per person: a name that already owns a label keeps it,
+        # and every line handed to the same new name shares one label.
+        # A fresh label per line showed one person as several speakers.
+        label_for_name: dict[str, str] = {}
+        for line in meeting.transcript_lines:
+            if line.speaker and line.speaker_label and not line.is_overlap:
+                label_for_name.setdefault(line.speaker.strip().lower(), line.speaker_label)
+
         by_start = {round(float(c["start_sec"]), 2): c for c in changes if "start_sec" in c}
         for line in meeting.transcript_lines:
             key = round(float(line.start_sec), 2)
@@ -779,10 +790,11 @@ def reassign_transcript_lines(
                 line.confidence = float(change["confidence"])
             # Give the reply its own diarization label so future enroll/match
             # treats the two voices separately.
-            new_label = change.get("new_speaker_label")
+            new_label = change.get("new_speaker_label") or label_for_name.get(new_name.lower())
             if not new_label:
                 new_label = f"Speaker_{next_id:02d}"
                 next_id += 1
+                label_for_name[new_name.lower()] = new_label
             line.speaker_label = new_label
 
         session.flush()

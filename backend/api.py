@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import tempfile
+import queue
 import threading
 import uuid
 
@@ -51,6 +52,31 @@ router = APIRouter(prefix="/api")
 
 # One transcription at a time — see module docstring.
 _processing_lock = threading.Lock()
+_mp4_convert_lock = threading.Lock()
+
+# Uploads wait here for the one worker that transcribes them. Running each
+# one as a FastAPI background task tied up a request thread for the whole
+# wait: with ~40 uploads queued, every thread was waiting on the lock and
+# the API itself stopped answering.
+_job_queue: "queue.Queue[tuple]" = queue.Queue()
+
+
+def _job_worker() -> None:
+    while True:
+        func, args = _job_queue.get()
+        try:
+            func(*args)
+        except Exception:
+            logger.exception("queued job failed")
+        finally:
+            _job_queue.task_done()
+
+
+threading.Thread(target=_job_worker, name="meeting-jobs", daemon=True).start()
+
+
+def enqueue_job(func, *args) -> None:
+    _job_queue.put((func, args))
 
 MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 UPLOAD_COPY_CHUNK = 1024 * 1024
@@ -195,6 +221,19 @@ def create_meeting(
     department: str = Form("AI Team"),
     project_name: str = Form(""),
 ):
+    # Checked before the audio is saved: a value too long for its column
+    # used to fail inside add_meeting, after save_audio had already moved
+    # the file into storage, leaving an orphan with no meeting.
+    for field, value, limit in (
+        ("title", title, 512),
+        ("department", department, 64),
+        ("project_name", project_name, 128),
+        ("meeting_type", meeting_type, 32),
+        ("stt_provider", stt_provider, 32),
+    ):
+        if value and len(value.strip()) > limit:
+            raise HTTPException(422, f"{field} is too long (max {limit} characters).")
+
     extension = _extension(file.filename)
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
         raise HTTPException(
@@ -254,7 +293,7 @@ def create_meeting(
     }
     store.add_meeting(record)
 
-    background_tasks.add_task(process_meeting, meeting_id, adapter_choice)
+    enqueue_job(process_meeting, meeting_id, adapter_choice)
     return record
 
 
@@ -467,7 +506,12 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # no
                 if OVERLAP_DETECTION_ENABLED:
                     from models.overlap_detection import detect_overlaps_from_audio
 
-                    new_transcript = detect_overlaps_from_audio(path, new_transcript)
+                    # Overlap is a refinement; a failure in it must not
+                    # throw away the recluster that just succeeded.
+                    try:
+                        new_transcript = detect_overlaps_from_audio(path, new_transcript)
+                    except Exception:
+                        logger.exception(f"[{meeting_id}] overlap detection failed; keeping recluster")
 
                 # Re-colour and rebuild talk-time for the new labels.
                 color_map: dict[str, str] = {}
@@ -480,12 +524,24 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # no
                         ]
                     line["color"] = color_map[lab]
 
+                # An overlap line belongs to both of its speakers, not to a
+                # third person called "Speaker_00 + Speaker_01".
                 totals: dict[str, float] = {}
                 for line in new_transcript:
-                    name = line.get("speaker") or "Unknown"
-                    totals[name] = totals.get(name, 0.0) + (
-                        float(line.get("end_sec") or 0) - float(line.get("start_sec") or 0)
-                    )
+                    seconds = float(line.get("end_sec") or 0) - float(line.get("start_sec") or 0)
+                    if line.get("is_overlap"):
+                        names = [s for s in (line.get("candidate_speakers") or []) if s]
+                    else:
+                        names = []
+                    if not names:
+                        names = [p.strip() for p in re.split(r"\s*(?:\+|&)\s*", line.get("speaker") or "Unknown") if p.strip()]
+                    overlap = line.get("overlap_seconds")
+                    for i, name in enumerate(names):
+                        if overlap is not None and len(names) == 2:
+                            share = seconds if i == 0 else min(float(overlap), seconds)
+                        else:
+                            share = seconds / len(names)
+                        totals[name] = totals.get(name, 0.0) + share
                 grand = sum(totals.values()) or 1.0
                 stats = [
                     {
@@ -529,10 +585,15 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # no
             logger.exception(f"[{meeting_id}] offline recluster failed")
 
     # Multi-pass under-split repair for any N speakers.
-    # Skip embedding collapsed-split after a successful offline recluster —
-    # that pass is for under-split (too few speakers); re-running it after
-    # auto-k undoes the accurate count (3 speakers → dozens again).
-    allow_embedding_split = not recluster_info.get("applied")
+    # The embedding split compares neighbouring lines one pair at a time and
+    # opens a new speaker whenever two prints differ by COLLAPSED_SPLIT_DISTANCE.
+    # One person's prints differ by that much between a long sentence and a
+    # short "okay", so on a solo recording it manufactures speakers. The
+    # recluster above already decides the count from the whole meeting, so
+    # this pass is off unless asked for (COLLAPSED_SPLIT_ENABLED=1).
+    from config import COLLAPSED_SPLIT_ENABLED
+
+    allow_embedding_split = COLLAPSED_SPLIT_ENABLED and not recluster_info.get("applied")
     max_passes = 5
     for _pass in range(max_passes):
         changed = False
@@ -623,10 +684,14 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # no
             continue
         old_name = match["old_name"]
         new_name = match["identified_as"]
-        if old_name != new_name:
-            updated = store.rename_speaker(meeting_id, old_name, new_name)
-            if updated is None:
-                continue
+        if old_name == new_name:
+            # Already named: nothing changed, so it is not "applied". The
+            # page re-runs this call while `applied` is non-empty, and
+            # reporting a no-op here kept it re-running forever.
+            continue
+        updated = store.rename_speaker(meeting_id, old_name, new_name)
+        if updated is None:
+            continue
         store.set_speaker_identification(
             meeting_id,
             speaker=new_name,
@@ -646,27 +711,39 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # no
 
 @router.api_route("/meetings/{meeting_id}/audio", methods=["GET", "HEAD"])
 def get_meeting_audio(meeting_id: str, request: Request):
+    # Only a meeting that exists may have its audio read: the id reaches the
+    # filesystem, and ".." resolved to the storage root, whose first file is
+    # the voice-profile store.
+    if store.get_meeting(meeting_id) is None:
+        raise HTTPException(404, "Meeting not found.")
     path = store.audio_path(meeting_id)
     if path is None or not os.path.exists(path):
         raise HTTPException(404, "No audio stored for this meeting.")
 
     if path.endswith(".mp4"):
+        # The browser sends a HEAD and several range GETs at once. One lock
+        # and a temp-then-rename keep a second request from reading a
+        # half-written audio.m4a, and a failed ffmpeg leaves nothing behind
+        # to be served forever.
         m4a_path = os.path.join(os.path.dirname(path), "audio.m4a")
+        with _mp4_convert_lock:
+            if not os.path.exists(m4a_path):
+                tmp_path = m4a_path + ".part.m4a"
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", path, "-vn", "-c:a", "copy", tmp_path],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=True,
+                    )
+                    os.replace(tmp_path, m4a_path)
+                except Exception:
+                    logger.exception(f"[{meeting_id}] mp4 -> m4a conversion failed; serving the mp4")
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
         if os.path.exists(m4a_path):
             path = m4a_path
-        else:
-            try:
-                import subprocess
-                subprocess.run(
-                    ["ffmpeg", "-y", "-i", path, "-vn", "-c:a", "copy", m4a_path],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                if os.path.exists(m4a_path):
-                    path = m4a_path
-            except Exception:
-                pass
 
     import mimetypes
     media_type, _ = mimetypes.guess_type(path)
@@ -699,6 +776,10 @@ def attach_meeting_audio(
     meeting = store.get_meeting(meeting_id)
     if meeting is None:
         raise HTTPException(404, "Meeting not found.")
+    if meeting.get("status") == "Processing":
+        # The running job already holds its audio in memory; a second file
+        # now would finish after it and silently overwrite its result.
+        raise HTTPException(409, "This meeting is still processing. Wait for it to finish, then attach new audio.")
 
     extension = _extension(file.filename)
     if extension not in ALLOWED_UPLOAD_EXTENSIONS:
@@ -744,7 +825,7 @@ def attach_meeting_audio(
         audioQualityWarning=None,
     )
 
-    background_tasks.add_task(process_meeting, meeting_id)
+    enqueue_job(process_meeting, meeting_id)
     updated = store.get_meeting(meeting_id)
     if updated is None:
         raise HTTPException(500, "Meeting could not be loaded after attaching audio.")
@@ -896,9 +977,14 @@ def process_meeting(meeting_id: str, stt_adapter_choice: str | None = None):
             # A transcript that is empty *because every segment threw* is a
             # failure, not a silent recording, and must not be reported as a
             # completed meeting — that is how a broken dependency hides.
-            if not session.transcript and session.failed_segments:
+            # The same goes for a meeting where the engine failed on more
+            # segments than it transcribed (a key that expired or a quota
+            # that ran out part-way): the partial transcript stays visible,
+            # but the status says it did not finish.
+            if session.failed_segments and session.failed_segments >= max(len(session.transcript), 1):
                 message = (
-                    f"All {session.failed_segments} speech segments failed to process. "
+                    f"{session.failed_segments} speech segment(s) failed to process"
+                    f"{' and ' + str(len(session.transcript)) + ' succeeded' if session.transcript else ''}. "
                     f"Last error: {session.last_error}"
                 )
                 logger.error(f"[{meeting_id}] {message}")

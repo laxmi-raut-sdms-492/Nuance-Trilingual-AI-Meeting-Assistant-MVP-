@@ -41,9 +41,16 @@ export function MeetingsProvider({ children }) {
   const requestSeq = useRef(0)
   const invalidateInFlight = useCallback(() => ++requestSeq.current, [])
 
+  // Tracked separately from requestSeq: a quiet poll or a local mutation
+  // bumping requestSeq must not leave the Loader stuck on screen.
+  const loadingSeq = useRef(0)
+
   const refresh = useCallback(async ({ quiet = false } = {}) => {
     const seq = ++requestSeq.current
-    if (!quiet) setLoading(true)
+    if (!quiet) {
+      loadingSeq.current = seq
+      setLoading(true)
+    }
     try {
       const { data } = await meetingsApi.list()
       if (seq !== requestSeq.current) return
@@ -53,7 +60,7 @@ export function MeetingsProvider({ children }) {
       if (seq !== requestSeq.current) return
       setError(describeError(err))
     } finally {
-      if (seq === requestSeq.current && !quiet) setLoading(false)
+      if (!quiet && seq === loadingSeq.current) setLoading(false)
     }
   }, [])
 

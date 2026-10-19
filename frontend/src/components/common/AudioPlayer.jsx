@@ -265,7 +265,11 @@ export default function AudioPlayer({
     if (playing) audio.pause()
     else {
       audio.playbackRate = playbackSpeed
-      audio.play().catch(() => setFailed(true))
+      audio.play().catch((err) => {
+        // AbortError is a quick play→pause; NotAllowedError is the autoplay
+        // policy. Neither means the media is broken — onError covers that.
+        if (err?.name !== 'AbortError' && err?.name !== 'NotAllowedError') setFailed(true)
+      })
     }
   }
 

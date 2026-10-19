@@ -34,6 +34,7 @@ import os
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, Form, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from config import LOG_LEVEL, CORS_ORIGINS
 from audio_utils import load_audio_file
@@ -42,6 +43,7 @@ from models.identifier import SpeakerIdentifier
 from pipeline import MeetingSession
 from stt.base import STTProviderError
 from stt.resolver import resolve_stt_adapter
+from auth import auth_required, login as auth_login, require_token, token_is_valid
 
 logging.basicConfig(level=getattr(logging, LOG_LEVEL), format="%(asctime)s [%(name)s] %(message)s")
 
@@ -71,11 +73,18 @@ def cleanup_stuck_processing_meetings():
                 line_count = session.scalar(
                     select(func.count(TranscriptLine.id)).where(TranscriptLine.meeting_id == m.id)
                 ) or 0
+                # Lines are saved while a meeting is still being processed
+                # (that is how the progress bar moves), so "has lines" does
+                # not mean "finished". A meeting the restart interrupted is
+                # not complete, whatever it managed to save; say so.
+                m.status = "Failed"
+                m.progress = 0
                 if line_count > 0:
-                    m.status = "Completed"
-                    m.progress = 100
+                    m.error = (
+                        "Interrupted by a server restart before it finished; "
+                        "the partial transcript is kept. Re-attach the audio to run it again."
+                    )
                 else:
-                    m.status = "Failed"
                     m.error = "Interrupted by server restart. Please re-upload audio."
     except Exception as exc:
         logging.getLogger("startup").warning(f"Could not cleanup stuck processing meetings: {exc}")
@@ -102,6 +111,21 @@ def favicon():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/auth/status")
+def auth_status():
+    return {"required": auth_required()}
+
+
+@app.post("/auth/login")
+def auth_login_route(payload: dict):
+    return auth_login(str(payload.get("password", "")))
+
+
+# Registered before CORS so that a rejected request still gets CORS headers
+# (middleware runs in reverse registration order: CORS wraps this).
+app.middleware("http")(require_token)
 
 app.add_middleware(
     CORSMiddleware,
@@ -147,11 +171,16 @@ async def enroll_speaker(name: str = Form(...), audio: UploadFile = None):
         tmp.write(await audio.read())
         tmp_path = tmp.name
 
-    try:
+    def _decode_and_embed():
         waveform = load_audio_file(tmp_path)
         if waveform.size == 0:
             raise HTTPException(400, "That recording contained no audio.")
-        embedding = get_embedding(waveform)
+        return get_embedding(waveform)
+
+    try:
+        # ffmpeg plus the voice model take seconds; off the event loop, so
+        # every other request keeps being served meanwhile.
+        embedding = await run_in_threadpool(_decode_and_embed)
         identifier.enroll(name, embedding)
     except HTTPException:
         raise
@@ -184,6 +213,9 @@ async def meeting_stream(
     processing_mode: str = "",
     stt_provider: str = "",
 ):
+    if not token_is_valid(websocket.query_params.get("token")):
+        await websocket.close(code=1008, reason="Sign in to use this app.")
+        return
     await websocket.accept()
 
     if session_id not in sessions:
@@ -210,13 +242,20 @@ async def meeting_stream(
             # final utterance of every live meeting is lost. The socket is
             # already gone, so these entries land in the transcript only.
             try:
-                session.finish()
+                await run_in_threadpool(session.finish)
             except Exception as e:
                 logging.getLogger("main").error(f"final flush failed for session {session_id}: {e}")
+            # The session's audio buffers and models are not needed once the
+            # socket is gone; keeping every live meeting for the life of the
+            # process grew memory without bound.
+            sessions.pop(session_id, None)
             break
 
         try:
-            new_entries = session.process_chunk(pcm_bytes)
+            # STT on a chunk can take seconds (Whisper, or a Sarvam call
+            # with a 30s timeout). Run it in a worker thread so the event
+            # loop — and every other client — is not blocked meanwhile.
+            new_entries = await run_in_threadpool(session.process_chunk, pcm_bytes)
             for entry in new_entries:
                 await websocket.send_json(entry)
         except Exception as e:

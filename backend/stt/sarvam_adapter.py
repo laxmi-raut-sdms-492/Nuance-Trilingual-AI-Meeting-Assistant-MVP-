@@ -198,9 +198,16 @@ class SarvamSTTAdapter(STTAdapter):
         # running dominant language (see pipeline.py); it is not forced on the
         # first attempt — locking every segment to the first-detected language
         # is exactly the code-switching failure mode this app exists to avoid.
+        self.last_error = None
         response = self._call(wav_bytes, "unknown")
         if response is None:
-            return self._stamp(self._empty_result(hint_language))
+            # An expired key, exhausted quota or a dead network looks exactly
+            # like a silent clip unless the result says so. The pipeline
+            # counts this as a failed segment, and a meeting whose segments
+            # all failed is marked Failed instead of Completed-and-empty.
+            result = self._empty_result(hint_language)
+            result["error"] = self.last_error or "Sarvam STT request failed"
+            return self._stamp(result)
 
         if self._needs_forced_retry(response):
             # Sarvam answered in a language we do not support (Urdu, Kannada,
@@ -264,7 +271,9 @@ class SarvamSTTAdapter(STTAdapter):
             )
         except Exception as exc:  # ApiError (e.g. 402 quota), timeout, network
             # Cloud STT stays on Sarvam. A failed segment is skipped rather
-            # than transcribed by Whisper or IndicConformer.
+            # than transcribed by Whisper or IndicConformer — but the failure
+            # is reported (see _transcribe_clip), not passed off as silence.
+            self.last_error = f"Sarvam STT: {exc}"
             logger.warning(f"Sarvam STT failed ({exc}); this segment stays on Sarvam and is skipped")
             return None
 

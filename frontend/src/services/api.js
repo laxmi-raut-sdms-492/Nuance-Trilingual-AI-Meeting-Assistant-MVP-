@@ -7,6 +7,44 @@ export const api = axios.create({
   timeout: 20000
 })
 
+// The backend may sit behind one shared password (backend/auth.py). The
+// token it hands out on sign-in goes with every request; a 401 means the
+// token is gone or stale, and AuthContext then shows the sign-in screen.
+const TOKEN_KEY = 'nuance:token'
+
+export function getToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || null
+  } catch {
+    return null
+  }
+}
+
+export function setToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    else localStorage.removeItem(TOKEN_KEY)
+  } catch {
+    // ignore write failures
+  }
+}
+
+api.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error?.response?.status === 401 && !error.config?.url?.includes('/auth/login')) {
+      window.dispatchEvent(new Event('nuance:unauthorized'))
+    }
+    return Promise.reject(error)
+  }
+)
+
 // Turns an axios failure into something worth showing a user. Without this
 // every error surfaces as the string "Network Error", which doesn't tell
 // anyone that the Python backend simply isn't running.
@@ -77,7 +115,10 @@ export const meetingsApi = {
 
   // The <audio> element fetches this itself, so it needs a plain URL rather
   // than an axios call.
-  audioUrl: (id) => `${API_BASE_URL}/meetings/${id}/audio`,
+  audioUrl: (id) => {
+    const token = getToken()
+    return `${API_BASE_URL}/meetings/${id}/audio${token ? `?token=${encodeURIComponent(token)}` : ''}`
+  },
 
   // Attach or replace audio on an existing meeting and restart transcription.
   uploadAudio: (meetingId, file, onUploadProgress) => {
@@ -110,4 +151,9 @@ export const speakersApi = {
 
   remove: (name) =>
     api.delete(`/speakers/${encodeURIComponent(name)}`, { baseURL: ROOT_URL })
+}
+
+export const authApi = {
+  status: () => api.get('/auth/status', { baseURL: ROOT_URL }),
+  login: (password) => api.post('/auth/login', { password }, { baseURL: ROOT_URL }),
 }

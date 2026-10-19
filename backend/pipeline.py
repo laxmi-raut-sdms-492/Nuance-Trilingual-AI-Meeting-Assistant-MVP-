@@ -157,10 +157,20 @@ class MeetingSession:
 
     def _finalize_session(self) -> None:
         """Offline recluster + name resolution + speaker turns — shared by live and upload."""
-        self.apply_offline_recluster()
-        self.apply_overlap_detection()
-        self.finalize_labels()
-        self.build_and_apply_turns()
+        # Each step improves the transcript that already exists; none of
+        # them may lose it. A model that runs out of memory on the overlap
+        # pass used to fail the whole upload after every word was in.
+        for step in (
+            self.apply_offline_recluster,
+            self.apply_overlap_detection,
+            self.finalize_labels,
+            self.build_and_apply_turns,
+        ):
+            try:
+                step()
+            except Exception as exc:
+                logger.exception(f"[{self.session_id}] {step.__name__} failed; keeping the transcript as it is")
+                self.last_error = f"{step.__name__}: {exc}"
 
     def _maybe_vad_fallback(self, audio: np.ndarray, vad_emitted: int) -> list[dict]:
         """
@@ -349,14 +359,23 @@ class MeetingSession:
             by_start = {
                 round(float(c["start_sec"]), 2): c for c in greeting_fixes
             }
+            # One person gets one label: every reply handed to "Lakshmi"
+            # shares a label, and a name that already owns a label keeps it.
+            # Minting a label per repaired line showed one person as many.
+            label_for_name: dict[str, str] = {
+                name.lower(): label for label, (name, _) in resolved.items()
+            }
             for entry in self.transcript:
                 key = round(float(entry.get("start_sec") or 0), 2)
                 change = by_start.get(key)
                 if not change:
                     continue
                 new_name = change["new_speaker"]
-                new_label = f"Speaker_{next_id:02d}"
-                next_id += 1
+                new_label = label_for_name.get(new_name.lower())
+                if new_label is None:
+                    new_label = f"Speaker_{next_id:02d}"
+                    next_id += 1
+                    label_for_name[new_name.lower()] = new_label
                 entry["speaker"] = new_name
                 entry["identified_as"] = new_name
                 entry["speaker_label"] = new_label
@@ -748,6 +767,14 @@ class MeetingSession:
             )
         else:
             asr = self.stt_adapter.transcribe(audio, hint_language=hint)
+        if asr.get("error"):
+            # The engine could not transcribe this piece at all (bad key,
+            # quota, network). Count it, so an empty meeting is reported as
+            # the failure it is rather than as a silent recording.
+            self.failed_segments += 1
+            self.last_error = str(asr["error"])
+            logger.warning(f"[{start:.1f}-{end:.1f}s] STT failed: {self.last_error}")
+            return None
         if asr["text"] and has_foreign_script(asr["text"]):
             original = asr["text"]
             asr["text"] = clean_text(original)
@@ -866,10 +893,17 @@ class MeetingSession:
                 clean_spks = [s for s in c_spks if s and "+" not in s and " & " not in s]
                 if not clean_spks:
                     clean_spks = [entry.get("speaker") or "Unknown"]
-                share_dur = dur / len(clean_spks)
-                for spk in clean_spks:
+                # The line's own speaker talked all of it; whoever joined
+                # in talked only the overlapping seconds. Without that
+                # figure (older lines) the time is shared equally.
+                overlap = entry.get("overlap_seconds")
+                for i, spk in enumerate(clean_spks):
                     colors.setdefault(spk, self._color_for(spk))
                     speaker_labels.setdefault(spk, spk)
+                    if overlap is not None and len(clean_spks) == 2:
+                        share_dur = dur if i == 0 else min(float(overlap), dur)
+                    else:
+                        share_dur = dur / len(clean_spks)
                     totals[spk] = totals.get(spk, 0.0) + share_dur
             else:
                 display = entry.get("speaker") or entry.get("speaker_label") or "Unknown"

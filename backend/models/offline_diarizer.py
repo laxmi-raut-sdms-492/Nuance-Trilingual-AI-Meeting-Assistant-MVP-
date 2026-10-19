@@ -29,9 +29,14 @@ DEFAULT_K_MAX = 12
 try:
     from config import (
         CLUSTER_MERGE_DISTANCE,
+        MIN_SPEAKER_SECONDS,
+        MIN_SPEAKER_SHARE,
         OFFLINE_RECLUSTER_MIN_SILHOUETTE,
         OFFLINE_SILHOUETTE_TIE_EPSILON,
+        RELIABLE_LINE_SECONDS,
+        SAME_VOICE_CENTROID_DISTANCE,
         SINGLE_SPEAKER_P90_DISTANCE,
+        SPEAKER_SPLIT_DISTANCE,
     )
 
     SILHOUETTE_MIN_SCORE = float(OFFLINE_RECLUSTER_MIN_SILHOUETTE)
@@ -41,9 +46,20 @@ except Exception:
     SILHOUETTE_MIN_SCORE = 0.18
     SILHOUETTE_TIE_EPSILON = 0.025
     SINGLE_SPEAKER_P90_DISTANCE = 0.38
+    SPEAKER_SPLIT_DISTANCE = 0.55
+    SAME_VOICE_CENTROID_DISTANCE = 0.40
+    RELIABLE_LINE_SECONDS = 1.0
+    MIN_SPEAKER_SECONDS = 4.0
+    MIN_SPEAKER_SHARE = 0.05
 
 # Stricter bar before inventing a split on a meeting the streamer called solo.
 SOLO_SPLIT_MIN_SILHOUETTE = 0.28
+
+# A few seconds of speech whose print is this far from every real voice is
+# not anyone in the room. Below it, the fragment joins the nearest voice.
+FRAGMENT_JOIN_DISTANCE = 0.80
+# The share-based fragment floor never asks for more speech than this.
+MAX_FRAGMENT_SECONDS = 20.0
 
 
 def likely_single_speaker(embeddings: np.ndarray) -> bool:
@@ -190,6 +206,160 @@ def pick_speaker_count_by_distance_threshold(
             score = 0.0
 
     return k, score, assignment
+
+
+def _weighted_centroid(emb: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    c = (emb * weights[:, None]).sum(axis=0)
+    return (c / (np.linalg.norm(c) + 1e-9)).astype(np.float32)
+
+
+def decide_speakers(
+    embeddings: np.ndarray,
+    durations: np.ndarray,
+    *,
+    split_distance: float = SPEAKER_SPLIT_DISTANCE,
+    same_voice_distance: float = SAME_VOICE_CENTROID_DISTANCE,
+    reliable_seconds: float = RELIABLE_LINE_SECONDS,
+    min_speaker_seconds: float = MIN_SPEAKER_SECONDS,
+    min_speaker_share: float = MIN_SPEAKER_SHARE,
+    k_max: int = DEFAULT_K_MAX,
+) -> np.ndarray | None:
+    """
+    How many people spoke, and which line belongs to whom, from the voice
+    prints of a whole meeting.
+
+    The count is not chosen by a score that compares k=2 against k=3 and so
+    on: such a score cannot even express "one person", and on a solo
+    recording it happily reports two. Instead the question asked is the one
+    a voice print can answer: are these two stretches of speech the same
+    voice or not? Lines are grouped (average-linkage, cosine) until the
+    groups are farther apart than one person's own variation, and k is
+    whatever is left — one included.
+
+    Prints of very short clips scatter, so lines under reliable_seconds do
+    not vote on the count. They are placed afterwards, each with the voice
+    it sounds most like, unless the person who was just speaking sounds
+    nearly as close, since a short "okay" usually belongs to the turn it
+    interrupts.
+
+    Returns one cluster id per line, or None when there is too little to go
+    on (callers then keep the labels they already have).
+    """
+    from sklearn.cluster import AgglomerativeClustering
+
+    n = len(embeddings)
+    if n == 0:
+        return None
+    durations = np.asarray(durations, dtype=np.float32)
+    valid = np.linalg.norm(embeddings, axis=1) > 1e-6
+    if valid.sum() == 0:
+        return None
+    if valid.sum() == 1:
+        return np.zeros(n, dtype=np.int32)
+
+    reliable = valid & (durations >= reliable_seconds)
+    if reliable.sum() < 2:
+        reliable = valid.copy()
+    rel_idx = np.where(reliable)[0]
+    rel_emb = embeddings[rel_idx]
+    rel_dur = np.maximum(durations[rel_idx], 0.1)
+
+    labels = AgglomerativeClustering(
+        n_clusters=None,
+        distance_threshold=split_distance,
+        metric="cosine",
+        linkage="average",
+    ).fit_predict(rel_emb)
+    labels = labels.astype(np.int32)
+
+    def centroids_of(labels: np.ndarray) -> dict[int, np.ndarray]:
+        return {
+            int(c): _weighted_centroid(rel_emb[labels == c], rel_dur[labels == c])
+            for c in np.unique(labels)
+        }
+
+    def seconds_of(labels: np.ndarray) -> dict[int, float]:
+        return {int(c): float(rel_dur[labels == c].sum()) for c in np.unique(labels)}
+
+    # Two groups whose overall voices are still closer than one person's own
+    # variation are one person the linkage happened to cut; join them,
+    # nearest pair first. The same step enforces k_max, nearest pair first.
+    while True:
+        cents = centroids_of(labels)
+        ids = sorted(cents)
+        if len(ids) < 2:
+            break
+        best = None
+        for i in range(len(ids)):
+            for j in range(i + 1, len(ids)):
+                d = float(cosine(cents[ids[i]], cents[ids[j]]))
+                if best is None or d < best[0]:
+                    best = (d, ids[i], ids[j])
+        if best[0] < same_voice_distance or len(ids) > k_max:
+            logger.info(f"offline recluster: joining clusters {best[1]} and {best[2]} (centroid dist={best[0]:.3f})")
+            labels[labels == best[2]] = best[1]
+            continue
+        break
+
+    # A group with only a few seconds of speech is not a participant; it is
+    # a stray print ("hi", "okay", a cough) whose owner is whoever sounds
+    # most like it. Only a print unlike every voice in the room (beyond
+    # FRAGMENT_JOIN_DISTANCE: noise, music, a TV) is left on its own.
+    # "A few seconds" scales with the meeting: 6s is a participant in a
+    # one-minute clip and a stray in a half-hour one.
+    total_speech = float(rel_dur.sum())
+    floor = min(max(min_speaker_seconds, min_speaker_share * total_speech), MAX_FRAGMENT_SECONDS)
+    while True:
+        cents = centroids_of(labels)
+        secs = seconds_of(labels)
+        if len(cents) < 2:
+            break
+        small = [c for c in sorted(cents, key=lambda c: secs[c]) if secs[c] < floor]
+        established = [c for c in cents if secs[c] >= floor]
+        moved = False
+        for c in small:
+            # A fragment joins a real voice when one is near enough. Where
+            # no voice has enough speech to count as real (a few seconds of
+            # "hi", "hello"), fragments join each other: two scattered prints
+            # are not evidence of two people.
+            others = established or [o for o in cents if o != c]
+            o_best = min(others, key=lambda o: float(cosine(cents[c], cents[o])))
+            d = float(cosine(cents[c], cents[o_best]))
+            if d < FRAGMENT_JOIN_DISTANCE or not established:
+                logger.info(f"offline recluster: fragment {c} ({secs[c]:.1f}s) -> {o_best} (dist={d:.3f})")
+                labels[labels == c] = o_best
+                moved = True
+                break
+        if not moved:
+            break
+
+    cents = centroids_of(labels)
+    assignment = np.full(n, -1, dtype=np.int32)
+    assignment[rel_idx] = labels
+
+    # Place the lines that did not vote: short clips and unusable prints.
+    for i in range(n):
+        if assignment[i] >= 0:
+            continue
+        prev = next((assignment[j] for j in range(i - 1, -1, -1) if assignment[j] >= 0), None)
+        if not valid[i]:
+            if prev is None:
+                prev = next((assignment[j] for j in range(i + 1, n) if assignment[j] >= 0), labels[0])
+            assignment[i] = prev
+            continue
+        dists = {c: float(cosine(embeddings[i], v)) for c, v in cents.items()}
+        best_c = min(dists, key=dists.get)
+        if prev is not None and prev in dists and dists[prev] <= dists[best_c] + 0.10:
+            best_c = prev
+        assignment[i] = best_c
+
+    # Renumber in order of first appearance.
+    seen: dict[int, int] = {}
+    out = np.empty(n, dtype=np.int32)
+    for i, c in enumerate(assignment):
+        seen.setdefault(int(c), len(seen))
+        out[i] = seen[int(c)]
+    return out
 
 
 def _assignment_from_transcript(transcript: list[dict]) -> np.ndarray:
@@ -515,81 +685,40 @@ def recluster_from_embeddings(
     valid_mask = norms > 1e-6
     valid_indices = np.where(valid_mask)[0]
 
-    if len(valid_indices) < 3:
+    if len(valid_indices) == 0:
         info["reason"] = "insufficient_valid_embeddings"
         info["streaming_k"] = streaming_label_count
         return transcript, info
 
-    valid_emb = emb[valid_indices]
+    durations = np.array(
+        [
+            max(float(t.get("end_sec") or 0) - float(t.get("start_sec") or 0), 0.0)
+            for t in transcript
+        ],
+        dtype=np.float32,
+    )
 
-    # Solo recording guard — do not invent a second speaker from variation.
-    if streaming_label_count > 1 and likely_single_speaker(valid_emb):
-        new_transcript, solo_info = collapse_to_single_speaker(transcript)
-        solo_info["streaming_k"] = streaming_label_count
-        solo_info["source"] = "single_speaker"
-        logger.info(
-            f"offline recluster: collapsed {streaming_label_count} streaming labels -> 1 speaker"
-        )
-        return new_transcript, solo_info
-
-    score_floor = SILHOUETTE_MIN_SCORE if min_score is None else min_score
-    if streaming_label_count <= 1:
-        score_floor = max(score_floor, SOLO_SPLIT_MIN_SILHOUETTE)
-
-    streaming_assignment = _assignment_from_transcript(transcript)
-    picked = pick_speaker_count(valid_emb, k_max=k_max, min_score=score_floor)
-
-    if picked is not None:
-        best_k, best_score, valid_assignment = picked
-        assignment = streaming_assignment.copy()
-        for idx, v_idx in enumerate(valid_indices):
-            assignment[v_idx] = valid_assignment[idx]
-        zero_indices = np.where(~valid_mask)[0]
-        for z_idx in zero_indices:
-            distances = np.abs(valid_indices - z_idx)
-            closest_valid_idx = valid_indices[np.argmin(distances)]
-            assignment[z_idx] = assignment[closest_valid_idx]
-
-        supported, why = (
-            _reduction_is_supported(emb, streaming_assignment, assignment, transcript)
-            if best_k < streaming_label_count
-            else (True, "no_reduction")
-        )
-
-        if not supported:
-            logger.info(
-                f"offline recluster: silhouette picked k={best_k} < streaming_k={streaming_label_count} "
-                f"but the implied merge was rejected ({why}) — keeping streaming speaker clusters"
-            )
-            assignment = streaming_assignment.copy()
-            info.update(
-                {
-                    "streaming_k": streaming_label_count,
-                    "source": "streaming",
-                    "reason": why,
-                }
-            )
-        else:
-            info.update(
-                {
-                    "k": best_k,
-                    "silhouette": round(best_score, 3),
-                    "streaming_k": streaming_label_count,
-                    "source": "silhouette",
-                }
-            )
-    else:
-        assignment = streaming_assignment.copy()
+    # The count comes from the voice prints of the whole meeting; the
+    # streaming labels only serve as the fallback when there is too little.
+    merged = decide_speakers(emb, durations, k_max=k_max)
+    if merged is None:
         info.update(
             {
                 "streaming_k": streaming_label_count,
                 "source": "streaming",
-                "reason": "weak_or_insufficient",
+                "reason": "insufficient_valid_embeddings",
             }
         )
+        return transcript, info
 
-    merged = merge_fragment_clusters(emb, assignment, transcript)
     final_k = len(set(int(a) for a in merged))
+    info.update(
+        {
+            "k": final_k,
+            "streaming_k": streaming_label_count,
+            "source": "single_speaker" if final_k == 1 else "distance",
+        }
+    )
 
     if _labels_equivalent(transcript, merged):
         info["reason"] = "already_matched"

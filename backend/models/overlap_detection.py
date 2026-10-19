@@ -36,7 +36,9 @@ from scipy.spatial.distance import cosine
 from config import (
     HF_TOKEN,
     OVERLAP_HOP_SECONDS,
+    OVERLAP_MIN_ABSOLUTE_SECONDS,
     OVERLAP_MIN_REGION_SECONDS,
+    OVERLAP_MIN_SHARE,
     OVERLAP_MODEL,
     OVERLAP_MIN_LINE_SECONDS,
     OVERLAP_MIN_SCORE,
@@ -225,11 +227,12 @@ def detect_overlaps(
 
         if regions is not None:
             parts = _intersection(start, end, regions)
-            if sum(p1 - p0 for p0, p1 in parts) < OVERLAP_MIN_REGION_SECONDS:
+            overlap_secs = sum(p1 - p0 for p0, p1 in parts)
+            if overlap_secs < OVERLAP_MIN_REGION_SECONDS or not _enough_of_line(overlap_secs, end - start):
                 continue
             other = _joiner(audio, main, centroids, parts, start, end, embed)
             if other:
-                _make_overlap(line, main, other)
+                _make_overlap(line, main, other, overlap_secs)
                 info["overlaps"] += 1
                 logger.info(f"[{start:.1f}-{end:.1f}s] overlap: {main} + {other} (model)")
             continue
@@ -247,8 +250,9 @@ def detect_overlaps(
 
         if joined:
             other = max(joined, key=joined.get)
-            if joined[other] >= OVERLAP_MIN_WINDOWS:
-                _make_overlap(line, main, other)
+            overlap_secs = min(joined[other] * OVERLAP_HOP_SECONDS + (OVERLAP_WINDOW_SECONDS - OVERLAP_HOP_SECONDS), end - start)
+            if joined[other] >= OVERLAP_MIN_WINDOWS and _enough_of_line(overlap_secs, end - start):
+                _make_overlap(line, main, other, overlap_secs)
                 info["overlaps"] += 1
                 logger.info(f"[{start:.1f}-{end:.1f}s] overlap: {main} + {other} ({joined[other]} window(s))")
 
@@ -256,8 +260,15 @@ def detect_overlaps(
     return lines, info
 
 
+def _enough_of_line(overlap_secs: float, line_secs: float) -> bool:
+    """Is the overlap a real part of the line, not a blip inside a long turn?"""
+    needed = min(OVERLAP_MIN_SHARE * line_secs, OVERLAP_MIN_ABSOLUTE_SECONDS)
+    return overlap_secs >= needed
+
+
 def _make_single(line: dict, label: str) -> None:
     line["is_overlap"] = False
+    line["overlap_seconds"] = None
     line["speaker_label"] = label
     line["speaker"] = label
     line["identified_as"] = UNKNOWN
@@ -266,10 +277,12 @@ def _make_single(line: dict, label: str) -> None:
     line["candidate_speakers"] = [label]
 
 
-def _make_overlap(line: dict, main: str, other: str) -> None:
+def _make_overlap(line: dict, main: str, other: str, overlap_secs: float | None = None) -> None:
     # The line's own speaker first: they were talking, the other joined in.
     combined = f"{main} + {other}"
     line["is_overlap"] = True
+    # How long both spoke; talk time credits the joiner with only this much.
+    line["overlap_seconds"] = round(float(overlap_secs), 2) if overlap_secs is not None else None
     line["speaker_label"] = combined
     line["speaker"] = combined
     line["identified_as"] = combined

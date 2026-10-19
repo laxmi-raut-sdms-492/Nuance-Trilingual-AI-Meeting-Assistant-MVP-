@@ -240,6 +240,8 @@ class TranscriptLine(Base):
     candidate_speakers: Mapped[str | None] = mapped_column(String(255))
     candidate_labels: Mapped[str | None] = mapped_column(String(255))
     is_separated_overlap: Mapped[bool] = mapped_column(nullable=False, default=False)
+    # Seconds of this line in which two people spoke at once (overlap lines).
+    overlap_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     separation_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     attributed_spans: Mapped[str | None] = mapped_column(Text, nullable=True)
 

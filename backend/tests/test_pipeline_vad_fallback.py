@@ -10,7 +10,7 @@ import pytest
 from audio_utils import UploadAudioProfile
 from config import MIN_SILENCE_MS, SAMPLE_RATE, SILENCE_RMS_THRESHOLD, VAD_BATCH_FALLBACK_THRESHOLD
 from pipeline import MeetingSession
-from tests.test_pipeline_labels import _FakeIdentifier
+from test_pipeline_labels import _FakeIdentifier
 
 
 def _tone(seconds: float) -> np.ndarray:

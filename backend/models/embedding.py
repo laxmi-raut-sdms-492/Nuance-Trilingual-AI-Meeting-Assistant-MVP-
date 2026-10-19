@@ -9,6 +9,7 @@ import numpy as np
 import torch
 
 from config import EMBEDDING_MODEL_SOURCE
+from models.model_lock import serialized
 
 _classifier = None  # lazy singleton
 
@@ -25,6 +26,7 @@ def _get_classifier():
     return _classifier
 
 
+@serialized
 def get_embedding(audio: np.ndarray) -> np.ndarray:
     """
     audio: 1-D float32 numpy array, 16kHz mono.

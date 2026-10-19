@@ -36,6 +36,7 @@ import re
 import time
 
 import numpy as np
+from scipy.spatial.distance import cosine
 
 from config import (
     SAMPLE_RATE,
@@ -160,6 +161,10 @@ class MeetingSession:
         self.apply_pending_relabels()
         self.apply_offline_recluster()
         self.apply_overlap_detection()
+        # Decide the speaker set from the finished audio before any boundary
+        # work: resegmentation matches against these clusters, so it is only
+        # as good as they are.
+        self.rebuild_speakers_offline()
         # After overlap detection, so a line already attributed to two people
         # on purpose is left alone rather than re-cut to one speaker each.
         self.apply_resegmentation()
@@ -324,6 +329,108 @@ class MeetingSession:
             if m:
                 max_id = max(max_id, int(m.group(1)))
         self.diarizer._next_label_id = max_id + 1
+
+    def rebuild_speakers_offline(self) -> int:
+        """
+        Re-decide who the speakers are, once, from the whole recording.
+
+        The streaming diarizer must commit to an assignment the moment a
+        segment arrives, before that voice is well characterised. A wrong
+        commitment is then averaged into the cluster's profile and every later
+        comparison inherits it, so one label ends up holding two or three
+        people — measured at 0.33 internal similarity against 0.72 for a
+        cluster holding one.
+
+        Nothing downstream can undo that, because the evidence that would
+        have prevented it arrived later. This pass simply does not decide
+        early: uniform windows over the finished speech, clustered in one go
+        with the count chosen by silhouette.
+
+        Lines are then reassigned to the nearest new centroid. Overlap lines
+        keep their composite label — they are deliberately two people, and
+        nearest-centroid would collapse them to one. When discovery is not
+        confident the streaming labels are kept untouched.
+        """
+        if self._full_audio is None or not self.transcript:
+            return 0
+        if len(self._embeddings) != len(self.transcript):
+            return 0
+
+        from models.embedding import get_embedding
+        from models.resegment import discover_speakers
+
+        spans = [
+            (float(e.get("start_sec") or 0), float(e.get("end_sec") or 0))
+            for e in self.transcript
+            if not e.get("is_overlap")
+            and float(e.get("end_sec") or 0) > float(e.get("start_sec") or 0)
+        ]
+        if not spans:
+            return 0
+
+        k_max = self._upload_profile.k_max if self._upload_profile else 8
+        found = discover_speakers(
+            self._full_audio, spans,
+            sample_rate=SAMPLE_RATE, embed=get_embedding, k_max=min(k_max, 8),
+        )
+        if not found:
+            return 0
+        centroids, _k, _score = found
+
+        labels = list(centroids)
+        matrix = np.stack([centroids[l] for l in labels])
+
+        previous = {e.get("speaker_label") for e in self.transcript}
+        changed = 0
+        for entry, embedding in zip(self.transcript, self._embeddings):
+            if entry.get("is_overlap"):
+                continue
+            vec = np.asarray(embedding, dtype=np.float32)
+            if np.linalg.norm(vec) < 1e-6:
+                continue
+            nearest = labels[int(np.argmin([float(cosine(vec, c)) for c in matrix]))]
+            if entry.get("speaker_label") != nearest:
+                changed += 1
+            if entry.get("speaker") == entry.get("speaker_label"):
+                entry["speaker"] = nearest
+            entry["speaker_label"] = nearest
+            entry["candidate_labels"] = [nearest]
+            entry["candidate_speakers"] = [entry.get("speaker") or nearest]
+
+        # Colours follow first appearance, so reassign them from scratch.
+        self._speaker_colors = {}
+        for entry in self.transcript:
+            entry["color"] = self._color_for(entry.get("speaker_label") or "")
+
+        self._install_clusters(centroids)
+        logger.info(
+            f"[{self.session_id}] speaker discovery replaced "
+            f"{len(previous)} streaming label(s) with {len(centroids)}; "
+            f"{changed} line(s) reassigned"
+        )
+        return changed
+
+    def _install_clusters(self, centroids: dict) -> None:
+        """Point the diarizer at the discovered speakers so later stages agree."""
+        self.diarizer = SessionDiarizer()
+        by_label: dict[str, list] = {}
+        for entry, emb in zip(self.transcript, self._embeddings):
+            label = entry.get("speaker_label")
+            if label in centroids:
+                by_label.setdefault(label, []).append(np.asarray(emb, dtype=np.float32))
+
+        highest = -1
+        for label, centroid in centroids.items():
+            samples = by_label.get(label) or [centroid]
+            self.diarizer.clusters[label] = {
+                "centroid": np.asarray(centroid, dtype=np.float32),
+                "count": len(samples),
+                "embeddings": [np.asarray(s, dtype=np.float32) for s in samples[-24:]],
+            }
+            match = re.match(r"(?i)^speaker[_\s]?(\d+)$", str(label).strip())
+            if match:
+                highest = max(highest, int(match.group(1)))
+        self.diarizer._next_label_id = highest + 1
 
     def apply_resegmentation(self) -> int:
         """

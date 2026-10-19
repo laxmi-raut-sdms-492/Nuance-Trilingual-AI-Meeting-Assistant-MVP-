@@ -240,3 +240,137 @@ def refine_span(
             collapsed.append(piece)
 
     return [(s, e, l) for s, e, l in collapsed]
+
+
+# --- Offline speaker discovery -------------------------------------------
+#
+# Everything above refines WHERE the boundaries are, against whatever speakers
+# diarization already found. That is only as good as those speakers, and the
+# streaming diarizer decides them greedily as audio arrives: it commits to an
+# assignment before the voice is well characterised, folds the mistake into
+# that cluster's profile, and every later comparison inherits it. Measured on
+# a 180s recording, one cluster ended up holding two or three different people
+# (internal similarity 0.33, worst pair 0.09, where one speaker scores 0.72).
+#
+# No matching rule fixes that, because the damage is a decision made earlier.
+# Four were measured — min over stored samples (the original), centroid only,
+# mean of the three nearest, and the min of those last two — and every one of
+# them still left a cluster holding more than one person.
+#
+# What does work is not deciding early. Given the whole meeting, cut uniform
+# windows long enough to be reliable, cluster them in one pass and let
+# silhouette choose the count: on the same recording that gives k=3 with
+# silhouette 0.44 and same-speaker distance 0.27, which is the right answer.
+#
+# So the streaming pass becomes a live preview and this decides the final
+# speaker set.
+
+# Long enough that a window is a voice rather than a phoneme. 3.0s measured
+# clean; below ~2s the clustering degrades toward the streaming result.
+DISCOVERY_WINDOW_SECONDS = 3.0
+
+# Non-overlapping: overlapping windows share audio, so their embeddings are
+# correlated and silhouette reads that as tighter clusters than really exist.
+DISCOVERY_HOP_SECONDS = 3.0
+
+# Below this there is not enough material to cluster meaningfully.
+DISCOVERY_MIN_WINDOWS = 6
+
+
+def discover_speakers(
+    audio: np.ndarray,
+    spans: list[tuple[float, float]],
+    *,
+    sample_rate: int,
+    embed,
+    k_max: int = 8,
+    min_silhouette: float = 0.18,
+) -> tuple[dict[str, np.ndarray], int, float] | None:
+    """
+    Decide the meeting's speakers from the finished audio.
+
+    spans are the speech regions to sample — transcript line extents, so
+    silence and non-speech never reach the clustering.
+
+    Returns ({label: centroid}, k, silhouette) or None when the audio does not
+    support a confident answer, in which case the caller keeps what it had.
+    Labels are Speaker_00.. in first-appearance order, because speaker colour
+    is assigned from that order everywhere else.
+    """
+    from sklearn.cluster import AgglomerativeClustering
+    from sklearn.metrics import silhouette_score
+
+    window = int(DISCOVERY_WINDOW_SECONDS * sample_rate)
+    hop = int(DISCOVERY_HOP_SECONDS * sample_rate)
+
+    vectors: list[np.ndarray] = []
+    starts: list[float] = []
+    for span_start, span_end in spans:
+        pos = int(span_start * sample_rate)
+        limit = min(int(span_end * sample_rate), len(audio))
+        while pos + window <= limit:
+            try:
+                vec = embed(audio[pos : pos + window])
+            except Exception as exc:
+                logger.debug(f"discovery embed failed at {pos / sample_rate:.2f}s: {exc}")
+                pos += hop
+                continue
+            if np.linalg.norm(vec) > 1e-6:
+                vectors.append(vec)
+                starts.append(pos / sample_rate)
+            pos += hop
+
+    if len(vectors) < DISCOVERY_MIN_WINDOWS:
+        logger.info(
+            f"speaker discovery: only {len(vectors)} usable window(s) — keeping existing speakers"
+        )
+        return None
+
+    matrix = np.stack(vectors)
+    upper = min(k_max, len(vectors) - 1)
+    if upper < 2:
+        return None
+
+    best: tuple[int, float, np.ndarray] | None = None
+    for k in range(2, upper + 1):
+        assignment = AgglomerativeClustering(
+            n_clusters=k, metric="cosine", linkage="average"
+        ).fit_predict(matrix)
+        if len(set(assignment.tolist())) < 2:
+            continue
+        try:
+            score = float(silhouette_score(matrix, assignment, metric="cosine"))
+        except Exception:
+            continue
+        if best is None or score > best[1]:
+            best = (k, score, assignment)
+
+    if best is None or best[1] < min_silhouette:
+        logger.info(
+            f"speaker discovery: best silhouette "
+            f"{best[1]:.3f} < {min_silhouette}" if best else "speaker discovery: no usable k"
+        )
+        return None
+
+    k, score, assignment = best
+
+    # Name clusters by when they are first heard, not by cluster id.
+    order: list[int] = []
+    for cid in assignment:
+        if int(cid) not in order:
+            order.append(int(cid))
+
+    centroids: dict[str, np.ndarray] = {}
+    for position, cid in enumerate(order):
+        members = matrix[assignment == cid]
+        centroid = members.mean(axis=0)
+        norm = float(np.linalg.norm(centroid))
+        if norm < 1e-6:
+            continue
+        centroids[f"Speaker_{position:02d}"] = (centroid / norm).astype(np.float32)
+
+    logger.info(
+        f"speaker discovery: {len(vectors)} windows -> k={k} "
+        f"silhouette={score:.3f} ({', '.join(sorted(centroids))})"
+    )
+    return centroids, k, score

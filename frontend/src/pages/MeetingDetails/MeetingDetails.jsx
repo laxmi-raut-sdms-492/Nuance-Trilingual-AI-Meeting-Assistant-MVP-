@@ -160,26 +160,9 @@ function deriveAttributedSpans(t, speakerStats) {
     })
   }
 
-  if (!t.is_overlap) return null
-
-  const uniqueSpks = getUniqueSpeakers(t.speaker, t.candidate_speakers, speakerStats)
-  if (uniqueSpks.length <= 1) return null
-
-  const fullText = (t.cleaned_text || t.text || '').trim()
-  if (!fullText) return null
-
-  const clauses = fullText.split(/(?<=[.!?])\s+|(?<=[,;])\s+/).filter(Boolean)
-  const targetClauses = clauses.length > 0 ? clauses : [fullText]
-
-  return targetClauses.map((clause, i) => {
-    const rawSpk = uniqueSpks[i % uniqueSpks.length]
-    const resolved = resolveSpeakerDisplayName(rawSpk, speakerStats)
-    return {
-      speaker: resolved,
-      text: clause,
-      color: getSpeakerColor(resolved, speakerStats),
-    }
-  })
+  // Without real source separation there is no way to know which words
+  // belong to which voice, so the text is shown as heard, not split up.
+  return null
 }
 
 function getUniqueSpeakers(speakerStr, candidateSpeakers, speakerStats = []) {
@@ -976,13 +959,13 @@ export default function MeetingDetails() {
                               {t.is_overlap && (
                                 <span
                                   title={
-                                    'Overlapping Speech: Multiple speakers detected simultaneously ' +
-                                    `(${ (t.candidate_speakers || [t.speaker]).join(' + ') }). Note: Speech was flagged as overlapping, not cleanly separated into per-speaker transcript lines.`
+                                    `${(t.candidate_speakers || [t.speaker]).join(' and ')} spoke at the same time ` +
+                                    'during this line. The text is what was heard; it is not split by speaker.'
                                   }
                                   className="px-1.5 py-0.5 border border-amber-500/40 bg-amber-500/10 rounded text-[10px] uppercase font-bold tracking-wider text-amber-500 ml-1 inline-flex items-center gap-1"
                                 >
                                   <span className="material-symbols-outlined text-[12px]">groups</span>
-                                  Overlapping Speech
+                                  Talking together
                                 </span>
                               )}
                             </div>

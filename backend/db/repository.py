@@ -14,6 +14,7 @@ session closes.
 from __future__ import annotations
 
 from models.clarity import mark_unclear
+from stt.script_guard import clean_transcript
 import datetime as dt
 import logging
 import os
@@ -198,7 +199,9 @@ def _to_dict(meeting: Meeting) -> dict:
             }
             for s in meeting.speaker_stats
         ]),
-        "transcript": mark_unclear([
+        # clean_transcript also covers meetings stored before the STT
+        # script checks existed, without rewriting their rows.
+        "transcript": mark_unclear(clean_transcript([
             {
                 "start_sec": t.start_sec,
                 "end_sec": t.end_sec,
@@ -227,7 +230,7 @@ def _to_dict(meeting: Meeting) -> dict:
                 "text": t.cleaned_text or t.text,
             }
             for t in meeting.transcript_lines
-        ]),
+        ])),
         # The two halves of this are not in tension: the title is what the card
         # shows and is shortened for it, while quote/sourceTime are the verbatim
         # transcript line the item was drawn from. Shortening the title is only
@@ -344,7 +347,7 @@ def _apply_children(session, meeting: Meeting, record: dict):
                 cleaned_text=t.get("cleaned_text") or t.get("text", ""),
                 text=t.get("cleaned_text") or t.get("text", ""),
             )
-            for i, t in enumerate(record["transcript"] or [])
+            for i, t in enumerate(clean_transcript(record["transcript"]))
         ]
 
     if "decisions" in record:

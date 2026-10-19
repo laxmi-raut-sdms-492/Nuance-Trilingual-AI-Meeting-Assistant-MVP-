@@ -584,3 +584,21 @@ def test_now_iso_is_utc_and_parseable():
     parsed = dt.datetime.fromisoformat(repo.now_iso())
     assert parsed.tzinfo is not None
     assert parsed.utcoffset() == dt.timedelta(0)
+
+
+def test_foreign_script_never_leaves_the_store():
+    """Lines saved before the STT checks existed are cleaned when read."""
+    from stt.script_guard import has_foreign_script
+
+    record = make_record()
+    for field in ("text", "raw_text", "cleaned_text"):
+        record["transcript"][0][field] = "ಈಗೋ"
+    repo.add_meeting(record)
+    stored = repo.get_meeting(record["id"])
+    assert len(stored["transcript"]) == len(record["transcript"]) - 1
+
+    with session_scope() as session:
+        line = session.scalars(select(TranscriptLine).where(TranscriptLine.meeting_id == record["id"])).first()
+        line.text = line.cleaned_text = "یہ ایک ٹیسٹ ہے"
+    stored = repo.get_meeting(record["id"])
+    assert not any(has_foreign_script(t["text"]) for t in stored["transcript"])

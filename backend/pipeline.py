@@ -52,7 +52,7 @@ from models.vad import SpeechSegmenter, fallback_segments
 from models.scd import split_on_speaker_change
 from models.lcd import split_on_language_change
 from models.identifier import SpeakerIdentifier
-from stt.script_guard import has_foreign_script, is_garbled, strip_foreign_script
+from stt.script_guard import clean_text, has_foreign_script
 from models.name_hints import (
     extract_self_introduction_name,
     line_can_name_a_speaker,
@@ -158,6 +158,7 @@ class MeetingSession:
     def _finalize_session(self) -> None:
         """Offline recluster + name resolution + speaker turns — shared by live and upload."""
         self.apply_offline_recluster()
+        self.apply_overlap_detection()
         self.finalize_labels()
         self.build_and_apply_turns()
 
@@ -223,6 +224,30 @@ class MeetingSession:
             )
         return info
 
+    def apply_overlap_detection(self) -> dict:
+        """
+        Re-decide overlap with the final speakers (models/overlap_detection.py).
+
+        Uploads only: it needs the whole recording, and the live path never
+        keeps it. Runs after the recluster so overlap names the same speakers
+        every other line does.
+        """
+        from config import OVERLAP_DETECTION_ENABLED
+        from models.overlap_detection import detect_overlaps
+
+        if not OVERLAP_DETECTION_ENABLED or self._full_audio is None:
+            return {"applied": False, "reason": "disabled_or_live"}
+        if len(self._embeddings) != len(self.transcript):
+            return {"applied": False, "reason": "length_mismatch"}
+
+        self.transcript, info = detect_overlaps(self.transcript, self._embeddings, self._full_audio)
+        if info.get("applied"):
+            for entry in self.transcript:
+                main = (entry.get("candidate_labels") or [entry.get("speaker_label")])[0]
+                entry["color"] = self._color_for(main)
+            logger.info(f"[{self.session_id}] overlap detection: {info.get('overlaps', 0)} line(s)")
+        return info
+
     def _rebuild_diarizer_from_embeddings(self) -> None:
         """Replace streaming clusters with centroids of the offline labels."""
         self.diarizer = SessionDiarizer()
@@ -282,11 +307,11 @@ class MeetingSession:
                 c_labels = entry.get("candidate_labels") or []
                 c_speakers = entry.get("candidate_speakers") or []
                 resolved_candidates = []
-                for lab, spk in zip(c_labels, c_speakers if len(c_speakers) == len(c_labels) else c_labels):
-                    if lab in resolved:
-                        resolved_candidates.append(resolved[lab][0])
-                    else:
-                        resolved_candidates.append(lab)
+                for lab in c_labels:
+                    name = resolved[lab][0] if lab in resolved else lab
+                    # Two speakers who were given the same spoken name would
+                    # read as "Asha + Asha"; keep the second one's label.
+                    resolved_candidates.append(name if name not in resolved_candidates else lab)
                 if resolved_candidates:
                     entry["candidate_speakers"] = resolved_candidates
                     disp = " + ".join(resolved_candidates)
@@ -636,7 +661,11 @@ class MeetingSession:
         if not attributed:
             return None
 
-        spans = attributed[0].get("attributed_spans") or []
+        spans = [
+            {**span, "text": clean_text(span.get("text"))}
+            for span in attributed[0].get("attributed_spans") or []
+        ]
+        spans = [span for span in spans if span["text"]]
         if len(spans) < 2:
             return None
 
@@ -720,10 +749,11 @@ class MeetingSession:
         else:
             asr = self.stt_adapter.transcribe(audio, hint_language=hint)
         if asr["text"] and has_foreign_script(asr["text"]):
-            if is_garbled(asr["text"]):
-                logger.info(f"[{start:.1f}-{end:.1f}s] dropping garbled foreign-script text: {asr['text'][:60]!r}")
+            original = asr["text"]
+            asr["text"] = clean_text(original)
+            if not asr["text"]:
+                logger.info(f"[{start:.1f}-{end:.1f}s] dropping garbled foreign-script text: {original[:60]!r}")
                 return None
-            asr["text"] = strip_foreign_script(asr["text"])
         if not asr["text"]:
             return None
 

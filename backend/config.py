@@ -290,6 +290,27 @@ OVERLAP_SEPARATION_ENABLED = os.getenv("OVERLAP_SEPARATION_ENABLED", "0").lower(
 OVERLAP_MIN_CONFIDENCE = float(os.getenv("OVERLAP_MIN_CONFIDENCE", "0.45"))
 SOURCE_SEPARATION_MODEL = os.getenv("SOURCE_SEPARATION_MODEL", "speechbrain/sepformer-wsj02mix")
 
+# --- Overlap detection (uploads, after the offline recluster) ---
+# models/overlap_detection.py slides a window over every line and marks it as
+# overlap when a window's voice print fits the blend of two speakers better
+# than either one alone. The score is that improvement in cosine distance.
+OVERLAP_DETECTION_ENABLED = os.getenv("OVERLAP_DETECTION_ENABLED", "1").lower() in ("1", "true", "yes")
+OVERLAP_WINDOW_SECONDS = float(os.getenv("OVERLAP_WINDOW_SECONDS", "1.5"))
+OVERLAP_HOP_SECONDS = float(os.getenv("OVERLAP_HOP_SECONDS", "0.5"))
+# 0.05 measured on two-voice mixes built from 4 real meetings: catches ~30%
+# of overlaps, wrongly flags ~2% of clean lines. 0.03 caught ~50% but flagged
+# ~15% of clean lines. Used only when the pyannote model below is unavailable.
+OVERLAP_MIN_SCORE = float(os.getenv("OVERLAP_MIN_SCORE", "0.05"))
+OVERLAP_MIN_WINDOWS = int(os.getenv("OVERLAP_MIN_WINDOWS", "1"))
+OVERLAP_MIN_LINE_SECONDS = float(os.getenv("OVERLAP_MIN_LINE_SECONDS", "1.0"))
+# Which moments hold two voices comes from this pyannote segmentation model
+# when it can be loaded. It is gated: accept its terms on huggingface.co and
+# set HF_TOKEN. Without it the voice-print test above is used instead.
+OVERLAP_MODEL = os.getenv("OVERLAP_MODEL", "pyannote/segmentation-3.0")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+# A line needs at least this much overlapping speech to be marked.
+OVERLAP_MIN_REGION_SECONDS = float(os.getenv("OVERLAP_MIN_REGION_SECONDS", "0.3"))
+
 # --- Speaker turns (transcript readability) ---
 TURN_MERGE_MAX_GAP_SEC = float(os.getenv("TURN_MERGE_MAX_GAP_SEC", "2.5"))
 TURN_MAX_DURATION_SEC = float(os.getenv("TURN_MAX_DURATION_SEC", "120.0"))

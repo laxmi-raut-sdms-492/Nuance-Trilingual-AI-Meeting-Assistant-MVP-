@@ -460,10 +460,20 @@ def identify_speakers(meeting_id: str, background_tasks: BackgroundTasks):  # no
                 path, transcript
             )
             if recluster_info.get("applied"):
+                # The recluster renamed speakers, so the overlap lines'
+                # speaker pairs are stale until re-detected.
+                from config import OVERLAP_DETECTION_ENABLED
+
+                if OVERLAP_DETECTION_ENABLED:
+                    from models.overlap_detection import detect_overlaps_from_audio
+
+                    new_transcript = detect_overlaps_from_audio(path, new_transcript)
+
                 # Re-colour and rebuild talk-time for the new labels.
                 color_map: dict[str, str] = {}
                 for line in new_transcript:
-                    lab = line.get("speaker_label") or line.get("speaker")
+                    lab = (line.get("candidate_labels") or [None])[0] if line.get("is_overlap") else None
+                    lab = lab or line.get("speaker_label") or line.get("speaker")
                     if lab not in color_map:
                         color_map[lab] = SPEAKER_COLORS[
                             len(color_map) % len(SPEAKER_COLORS)

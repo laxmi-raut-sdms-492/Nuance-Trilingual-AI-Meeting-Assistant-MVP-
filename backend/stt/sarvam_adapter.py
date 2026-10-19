@@ -44,9 +44,10 @@ from config import (
     SARVAM_STT_MODEL,
     SARVAM_STT_MODE,
     SARVAM_TIMEOUT_SECONDS,
+    SILENCE_RMS_THRESHOLD,
 )
 from stt.base import STTAdapter, STTProviderError
-from stt.script_guard import has_foreign_script, is_garbled, strip_foreign_script
+from stt.script_guard import clean_text, has_foreign_script
 
 logger = logging.getLogger("stt.sarvam")
 
@@ -56,6 +57,33 @@ logger = logging.getLogger("stt.sarvam")
 # (or the UI) knows how to render.
 _TO_SARVAM_LANGUAGE = {"en": "en-IN", "hi": "hi-IN", "mr": "mr-IN"}
 _FROM_SARVAM_LANGUAGE = {v: k for k, v in _TO_SARVAM_LANGUAGE.items()}
+
+# Sarvam's answers that mean "this was really Hindi".
+_HINDI_MISHEARD_AS = {"ur-IN", "pa-IN"}
+
+# Below this our language-ID model is guessing, so it is not asked.
+_LID_MIN_SECONDS = 1.0
+_LID_MIN_PROB = 0.6
+
+
+def _spoken_language(audio: np.ndarray) -> str | None:
+    """
+    en / hi / mr from our own language-ID model, or None when the clip is
+    too short or quiet to judge or the model is unavailable. Never raises:
+    a retry without this hint is still better than no retry.
+    """
+    if audio is None or len(audio) < _LID_MIN_SECONDS * SAMPLE_RATE:
+        return None
+    if float(np.sqrt(np.mean(np.square(audio)))) < SILENCE_RMS_THRESHOLD:
+        return None
+    try:
+        from models.lid import top_language
+
+        code, prob = top_language(audio)
+    except Exception as exc:
+        logger.warning(f"language-ID unavailable for Sarvam retry: {exc}")
+        return None
+    return code if prob >= _LID_MIN_PROB else None
 
 
 def _float32_to_wav_bytes(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> bytes:
@@ -105,6 +133,8 @@ class SarvamSTTAdapter(STTAdapter):
             ) from err
 
         self._client = SarvamAI(api_subscription_key=api_key, timeout=SARVAM_TIMEOUT_SECONDS)
+        # Languages Sarvam has confidently heard in this meeting; steers retries.
+        self._language_counts: dict[str, int] = {}
 
     # -- provenance (stt.base.STTAdapter) --
     #
@@ -173,14 +203,12 @@ class SarvamSTTAdapter(STTAdapter):
             return self._stamp(self._empty_result(hint_language))
 
         if self._needs_forced_retry(response):
-            # Sarvam answered in a language we do not support (Urdu, Bengali,
-            # ...) or in a foreign script. That is a misdetection, so ask again
-            # with the language pinned to the meeting's own language.
-            forced = hint_language if hint_language in ALLOWED_LANGUAGES else "hi"
-            logger.info(
-                f"Sarvam answered {getattr(response, 'language_code', None)!r}; "
-                f"retrying forced to {forced!r}"
-            )
+            # Sarvam answered in a language we do not support (Urdu, Kannada,
+            # Gujarati, ...) or in a foreign script. That is a misdetection, so
+            # ask again with the language pinned to one of ours.
+            raw_lang = getattr(response, "language_code", None)
+            forced = self._retry_language(audio, raw_lang, hint_language)
+            logger.info(f"Sarvam answered {raw_lang!r}; retrying forced to {forced!r}")
             retry = self._call(wav_bytes, _TO_SARVAM_LANGUAGE[forced])
             if retry is not None:
                 result = self._to_contract(retry, hint_language)
@@ -189,7 +217,40 @@ class SarvamSTTAdapter(STTAdapter):
                 result["language_fallback"] = True
                 return self._stamp(self._sanitize(result, hint_language))
 
-        return self._stamp(self._sanitize(self._to_contract(response, hint_language), hint_language))
+        result = self._sanitize(self._to_contract(response, hint_language), hint_language)
+        if result["text"] and not result["language_fallback"]:
+            self._remember_language(result["language"])
+        return self._stamp(result)
+
+    def _retry_language(self, audio: np.ndarray, raw_lang: str | None, hint_language: str | None) -> str:
+        """
+        The language to pin a retry to, after Sarvam heard something we do
+        not support.
+
+        Our own language-ID model decides English vs Devanagari, which it is
+        good at. It is poor at Hindi vs Marathi, so that choice comes from the
+        meeting: the Indic language Sarvam has been confidently hearing so far,
+        then the pipeline's hint, then what the wrong answer suggests (Urdu and
+        Punjabi are how Hindi gets misheard; in real meetings Gujarati,
+        Kannada and the other neighbouring scripts came from Marathi).
+
+        The old rule pinned to the meeting's most frequent language, which in
+        a mixed meeting is whoever spoke first — forcing an English clip to
+        Hindi and getting believable wrong words back.
+        """
+        if _spoken_language(audio) == "en":
+            return "en"
+        counts = getattr(self, "_language_counts", {})
+        indic = {code: n for code, n in counts.items() if code in ("hi", "mr")}
+        if indic:
+            return max(indic, key=indic.get)
+        if hint_language in ("hi", "mr"):
+            return hint_language
+        return "hi" if raw_lang in _HINDI_MISHEARD_AS else "mr"
+
+    def _remember_language(self, language: str) -> None:
+        counts = self.__dict__.setdefault("_language_counts", {})
+        counts[language] = counts.get(language, 0) + 1
 
     def _call(self, wav_bytes: bytes, language_code: str):
         try:
@@ -222,11 +283,9 @@ class SarvamSTTAdapter(STTAdapter):
         text = result.get("text") or ""
         if not has_foreign_script(text):
             return result
-        if is_garbled(text):
+        result["text"] = clean_text(text)
+        if not result["text"]:
             logger.info(f"dropping garbled foreign-script transcript: {text[:60]!r}")
-            result["text"] = ""
-        else:
-            result["text"] = strip_foreign_script(text)
         return result
 
     def _to_contract(self, response, hint_language: str | None) -> dict:

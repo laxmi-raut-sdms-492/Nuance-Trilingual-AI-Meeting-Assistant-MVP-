@@ -90,3 +90,84 @@ def test_unclear_marks_junk_but_keeps_every_line():
     out = mark_unclear(lines)
     assert len(out) == 4
     assert [t["is_unclear"] for t in out] == [False, True, True, False]
+
+
+# ------------------------------------------------------------ retry language
+
+
+def _patch_lid(monkeypatch, code):
+    import stt.sarvam_adapter as sarvam
+
+    monkeypatch.setattr(sarvam, "_spoken_language", lambda audio: code)
+
+
+def test_english_clip_misheard_is_retried_as_english(monkeypatch):
+    """The old rule forced the meeting's top language, turning English into Hindi."""
+    _patch_lid(monkeypatch, "en")
+    adapter, fake = _adapter([_resp("یہ ایک ٹیسٹ ہے", "ur-IN"), _resp("This is a test", "en-IN")])
+    out = adapter.transcribe(AUDIO, hint_language="hi")
+    assert fake.codes == ["unknown", "en-IN"]
+    assert out["text"] == "This is a test" and out["language"] == "en"
+
+
+def test_kannada_answer_retried_as_the_indic_language_already_heard(monkeypatch):
+    _patch_lid(monkeypatch, None)
+    adapter, fake = _adapter([
+        _resp("आपण अभिप्राय पाठवला", "mr-IN"),
+        _resp("ಈಗೋ", "kn-IN"),
+        _resp("आता", "mr-IN"),
+    ])
+    adapter.transcribe(AUDIO, hint_language="en")
+    out = adapter.transcribe(AUDIO, hint_language="en")
+    assert fake.codes == ["unknown", "unknown", "mr-IN"]
+    assert out["text"] == "आता"
+
+
+def test_retry_without_meeting_context_follows_the_wrong_answer(monkeypatch):
+    _patch_lid(monkeypatch, None)
+    adapter, fake = _adapter([_resp("یہ", "ur-IN"), _resp("यह", "hi-IN")])
+    adapter.transcribe(AUDIO, hint_language="en")
+    assert fake.codes[-1] == "hi-IN"
+
+    adapter, fake = _adapter([_resp("હા", "gu-IN"), _resp("हो", "mr-IN")])
+    adapter.transcribe(AUDIO, hint_language="en")
+    assert fake.codes[-1] == "mr-IN"
+
+
+def test_too_short_or_silent_clip_skips_language_id():
+    from stt.sarvam_adapter import _spoken_language
+
+    assert _spoken_language(np.zeros(8000, dtype=np.float32)) is None
+    assert _spoken_language(np.zeros(32000, dtype=np.float32)) is None
+
+
+# ------------------------------------------------------------ final gate
+
+
+def test_foreign_vowel_signs_and_digits_are_caught():
+    assert strip_foreign_script("રૂમ ઓપન. आहे") == ". आहे"
+    assert has_foreign_script("੧੨")  # Gurmukhi digits
+    for text in ("कि", "क्षेत्र", "café", "नमस्ते 2026", "१२३"):
+        assert not has_foreign_script(text), text
+
+
+def test_clean_text_drops_leftover_punctuation():
+    from stt.script_guard import clean_text
+
+    assert clean_text("હા.") == ""
+    assert clean_text("Good morning") == "Good morning"
+
+
+def test_clean_transcript_removes_and_strips_lines():
+    from stt.script_guard import clean_transcript
+
+    lines = [
+        {"text": "ಈಗೋ", "raw_text": "ಈಗೋ"},
+        {"text": "રૂમ ઓપન. रेफरन्स घ्यायचा आहे आणि तो पर्यंत माझ्याकडे पण आहे", "raw_text": "x"},
+        {"text": "Good morning", "attributed_spans": [{"speaker": "A", "text": "hello یہ"}]},
+    ]
+    out = clean_transcript(lines)
+    assert len(out) == 2
+    assert out[0]["text"] == ". रेफरन्स घ्यायचा आहे आणि तो पर्यंत माझ्याकडे पण आहे"
+    assert out[1]["attributed_spans"][0]["text"] == "hello"
+    assert lines[0]["text"] == "ಈಗೋ"  # input is not mutated

@@ -49,6 +49,11 @@ class SessionDiarizer:
         self._candidates: list[dict] = []
         # Pending short segments (< MIN_NEW_CLUSTER_SECONDS) buffered to prevent false force-matching
         self._pending_short_segments: list[dict] = []
+        # Retroactive corrections found after a segment's label was already
+        # returned: [{start, end, from_label, to_label, dist}]. The diarizer
+        # does not own the transcript, so it records them here and the
+        # pipeline applies them once the meeting is complete.
+        self.pending_relabels: list[dict] = []
         # All segment distances seen — used for adaptive thresholds.
         self._meeting_distances: list[float] = []
         self.last_segment_info: dict = {}
@@ -183,6 +188,40 @@ class SessionDiarizer:
                 }
                 return best_label
 
+        # Hard floor: a segment too short to embed reliably may never mint a
+        # speaker on its own. Below MIN_NEW_CLUSTER_SECONDS an ECAPA vector
+        # carries more phoneme than identity, so "far from every cluster" is
+        # evidence that the measurement is bad, not that someone new spoke —
+        # measured on a 3-speaker recording, 0.4s and 0.7s clips each opened
+        # their own permanent cluster this way. The candidate path above stays
+        # the only route for a brief reply to become a new speaker: it has to
+        # recur consistently (NEW_CLUSTER_EVIDENCE_COUNT) rather than be
+        # trusted once.
+        if self.clusters and duration < MIN_NEW_CLUSTER_SECONDS:
+            self._record_candidate(embedding, best_label, best_dist, start, end)
+            self._pending_short_segments.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "embedding": embedding.copy(),
+                    "closest": best_label,
+                    "dist": best_dist,
+                }
+            )
+            logger.info(
+                f"[{start:.1f}-{end:.1f}s] too short to mint a cluster "
+                f"({duration:.2f}s < {MIN_NEW_CLUSTER_SECONDS}s) -> tentatively "
+                f"{best_label} (dist={best_dist:.3f})"
+            )
+            self._last_assigned_label = best_label
+            self.last_segment_info = {
+                "is_overlap": False,
+                "candidate_labels": [best_label],
+                "speaker_label": best_label,
+                "tentative": True,
+            }
+            return best_label
+
         new_label = self._new_cluster(embedding)
         logger.info(
             f"[{start:.1f}-{end:.1f}s] new speaker evidence "
@@ -210,10 +249,31 @@ class SessionDiarizer:
         for pending in self._pending_short_segments:
             dist = float(cosine(pending["embedding"], centroid))
             if dist < th:
+                # This used to log and stop, which made the whole mechanism a
+                # no-op: add_segment had already returned the tentative label
+                # and the transcript line was written with it, so the segment
+                # stayed attributed to the cluster the diarizer had just
+                # established it did NOT belong to. Measured on a council
+                # meeting: a 6.5s turn was deferred to Speaker_00, Speaker_01
+                # was then minted from the following turn, this method computed
+                # 0.286 to Speaker_01 — same voice, unambiguously — logged
+                # "retroactively resolved", and left the line reading
+                # Speaker_00. Recording it lets the pipeline apply it.
+                if pending["closest"] != new_label:
+                    self.pending_relabels.append(
+                        {
+                            "start": pending["start"],
+                            "end": pending["end"],
+                            "from_label": pending["closest"],
+                            "to_label": new_label,
+                            "dist": dist,
+                        }
+                    )
                 logger.info(
                     f"[{pending['start']:.1f}-{pending['end']:.1f}s] retroactively resolved "
-                    f"pending short segment -> {new_label} (dist={dist:.3f})"
+                    f"pending short segment {pending['closest']} -> {new_label} (dist={dist:.3f})"
                 )
+                self._update_cluster(new_label, pending["embedding"])
             else:
                 remaining.append(pending)
         self._pending_short_segments = remaining
@@ -318,8 +378,10 @@ class SessionDiarizer:
             if best_dist < adaptive:
                 return True
 
-        # Short segment (< 1.8s) requires strong distance (> 0.85) to mint a new speaker cluster.
-        if duration < 1.8 and best_dist < 0.85:
+        # A short segment's embedding is dominated by phonetic content rather
+        # than voice identity, so being far from every cluster is weak evidence
+        # of a new speaker. Defer unless the voice is also genuinely distant.
+        if duration < MIN_NEW_CLUSTER_SECONDS and best_dist < SHORT_FORCE_MATCH_MAX_DISTANCE:
             return True
 
         return False

@@ -21,11 +21,48 @@ GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 # --- Audio ---
 
 SAMPLE_RATE = 16000            # all audio is normalized to this rate
-SCD_WINDOW_SECONDS = float(os.getenv("SCD_WINDOW_SECONDS", "0.6"))
-SCD_HOP_SECONDS = float(os.getenv("SCD_HOP_SECONDS", "0.25"))
-SCD_CHANGE_THRESHOLD = float(os.getenv("SCD_CHANGE_THRESHOLD", "0.13"))
+# Speaker Change Detection window geometry. These decide where a no-pause
+# segment is cut into single-speaker pieces (models/scd.py), so they are the
+# difference between "one person said this sentence" and "two people did".
+#
+# The window must be long enough for ECAPA to hear a VOICE rather than a
+# PHONEME. It was 0.6s with a 0.13 threshold, which is well under that, and
+# the cost was measurable rather than theoretical. On a 180s council meeting
+# (33 VAD segments, 104s of speech), for every cut SCD made, the two sides
+# either side of it were embedded and compared:
+#
+#   w=0.60 t=0.13   33 cuts, 12 of them between two pieces that scored as the
+#                   SAME voice (one at 0.77 similarity). A single 10.3s
+#                   sentence was cut into 7 pieces; the diarizer labelled the
+#                   first 3 Speaker_02 and the rest Speaker_01, because once
+#                   one noisy piece lands on the wrong cluster HYSTERESIS_BONUS
+#                   keeps the remainder there. 5 of 33 segments ended up split
+#                   across speakers.
+#   w=1.50 t=0.25   10 cuts, 3 same-voice.
+#   w=2.00 t=0.35    3 cuts, 0 same-voice — every cut between pieces scoring
+#                   0.14-0.16, i.e. genuinely different people, and they land
+#                   at the three real turn changes the aggressive setting had
+#                   buried in crumbs. 2 of 33 segments split across speakers.
+#
+# Raising the window therefore did not trade recall for precision here: the
+# real changes survived and only the false cuts went. The cost is that a
+# genuine back-to-back exchange inside a segment shorter than ~4s can no
+# longer be split (scd.py needs two windows), which is the right way round —
+# losing a fast turn boundary mislabels one line, while cutting mid-sentence
+# mislabels half of every long one.
+#
+# Measured on one meeting. Re-measure with tools/ before moving them again,
+# and measure same-voice cuts, not the speaker count: the count barely moves
+# across these settings (4 -> 3) while attribution changes completely.
+SCD_WINDOW_SECONDS = float(os.getenv("SCD_WINDOW_SECONDS", "2.0"))
+SCD_HOP_SECONDS = float(os.getenv("SCD_HOP_SECONDS", "0.5"))
+SCD_CHANGE_THRESHOLD = float(os.getenv("SCD_CHANGE_THRESHOLD", "0.35"))
 SCD_MIN_SEGMENT_SECONDS = 2.0
-SCD_MIN_SUBSEGMENT_SECONDS = 1.2
+# No piece shorter than the window that judged it, and no shorter than the
+# length below which the diarizer refuses to trust an embedding at all
+# (MIN_NEW_CLUSTER_SECONDS). 1.2s pieces were being emitted and then labelled
+# from vectors too short to carry identity.
+SCD_MIN_SUBSEGMENT_SECONDS = 2.0
 SILENCE_RMS_THRESHOLD = float(os.getenv("SILENCE_RMS_THRESHOLD", "0.002"))   # below this average amplitude, treat a segment as silence
 
 # --- Voice Activity Detection (speech segmentation) ---

@@ -17,7 +17,7 @@ no ASGI client is needed.
 
 from __future__ import annotations
 
-from conftest import make_record
+from tests.conftest import make_record
 
 import api
 

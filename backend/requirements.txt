@@ -11,7 +11,17 @@ torchaudio==2.4.1
 speechbrain==1.1.0
 
 git+https://github.com/openai/whisper.git
-transformers>=4.44.0
+# Upper bound is load-bearing. transformers 5.x requires torch >= 2.5; with
+# torch pinned at 2.4.1 above it does not error — it prints "Disabling PyTorch"
+# and carries on with tokenizers only, so `from transformers import AutoModel`
+# fails and models/indic_conformer.py cannot load. The pipeline then logs
+# "IndicConformer unavailable for mr/hi; falling back to Whisper" per segment
+# and every Hindi and Marathi line is decoded by Whisper instead — which is
+# the engine this project routes Devanagari AWAY from, because it mangles it.
+# Measured on a 3-minute mixed meeting: all 90% of the audio that was hi/mr
+# came back as garbled Devanagari. An unbounded range made that a silent
+# downgrade of the product's core feature on any fresh install.
+transformers>=4.44.0,<5
 onnx==1.20.1
 onnxruntime==1.20.1
 scikit-learn==1.5.2

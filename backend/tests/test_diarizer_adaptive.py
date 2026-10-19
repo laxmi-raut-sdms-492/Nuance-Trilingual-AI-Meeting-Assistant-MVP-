@@ -142,3 +142,53 @@ def test_normal_noisy_segment_does_not_false_positive_overlap():
     assert d.last_segment_info["candidate_labels"] == ["Speaker_00"]
 
 
+
+
+def test_a_subsecond_outlier_never_mints_a_speaker():
+    """
+    The reported bug. A fragment far too short to embed reliably lands far
+    from every cluster, and distance from everything used to be read as a new
+    person — on a real 3-speaker recording a 0.4s clip and a 0.7s clip each
+    opened their own permanent cluster this way.
+
+    Below MIN_NEW_CLUSTER_SECONDS the distance says more about the length of
+    the clip than about who spoke, so it may not create a speaker on its own.
+    """
+    d = SessionDiarizer()
+    established = _norm([1.0, 0.0, 0.0] + [0.0] * 13)
+    rng = np.random.default_rng(7)
+
+    for i in range(6):
+        emb = _norm(established + rng.normal(0, 0.03, established.shape))
+        d.add_segment(float(i * 3), float(i * 3 + 2.5), emb)
+
+    assert len(d.clusters) == 1
+
+    # 0.4s, and deliberately near-orthogonal to the only cluster.
+    outlier = _norm([0.0, 0.0, 1.0] + [0.0] * 13)
+    label = d.add_segment(30.0, 30.4, outlier)
+
+    assert len(d.clusters) == 1, "a 0.4s clip must not become a speaker"
+    assert label == "Speaker_00"
+    assert d.last_segment_info.get("tentative") is True
+
+
+def test_a_long_distinct_segment_still_mints_a_speaker():
+    """
+    The guard above is about length, not about refusing new speakers. A
+    segment with enough speech behind it must still be able to open one,
+    or the offline pass has nothing to correct toward.
+    """
+    d = SessionDiarizer()
+    voice_a = _norm([1.0, 0.0, 0.0] + [0.0] * 13)
+    rng = np.random.default_rng(11)
+
+    for i in range(6):
+        emb = _norm(voice_a + rng.normal(0, 0.03, voice_a.shape))
+        d.add_segment(float(i * 3), float(i * 3 + 2.5), emb)
+
+    voice_b = _norm([0.0, 1.0, 0.0] + [0.0] * 13)
+    for i in range(4):
+        d.add_segment(30.0 + i * 5, 34.0 + i * 5, _norm(voice_b + rng.normal(0, 0.02, voice_b.shape)))
+
+    assert len(d.clusters) == 2

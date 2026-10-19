@@ -20,7 +20,7 @@ import os
 import pytest
 from sqlalchemy import select
 
-from conftest import make_record
+from tests.conftest import make_record
 from db import repository as repo
 from db.models import Meeting, TranscriptLine
 from db.session import session_scope

@@ -157,8 +157,12 @@ class MeetingSession:
 
     def _finalize_session(self) -> None:
         """Offline recluster + name resolution + speaker turns — shared by live and upload."""
+        self.apply_pending_relabels()
         self.apply_offline_recluster()
         self.apply_overlap_detection()
+        # After overlap detection, so a line already attributed to two people
+        # on purpose is left alone rather than re-cut to one speaker each.
+        self.apply_resegmentation()
         self.finalize_labels()
         self.build_and_apply_turns()
 
@@ -187,6 +191,53 @@ class MeetingSession:
             f"but produced no transcript — falling back to {len(segments)} segment(s)"
         )
         return self._consume(segments)
+
+    def apply_pending_relabels(self) -> int:
+        """
+        Apply the diarizer's retroactive corrections to lines already written.
+
+        A segment whose voice was too far from every cluster to trust is given
+        the nearest label and buffered. If a later segment then establishes the
+        cluster it actually belonged to, the diarizer works out the correction —
+        but by then this line has already been emitted (live, it has been sent
+        to the browser), so the diarizer records the correction rather than
+        applying it, and this is where it lands.
+
+        Matched on the segment's own time span, which is unique per line and
+        survives the label changes happening around it.
+        """
+        relabels = getattr(self.diarizer, "pending_relabels", None)
+        if not relabels or not self.transcript:
+            return 0
+
+        applied = 0
+        for change in relabels:
+            for entry in self.transcript:
+                if (
+                    abs(float(entry.get("start_sec") or 0) - change["start"]) > 0.01
+                    or abs(float(entry.get("end_sec") or 0) - change["end"]) > 0.01
+                ):
+                    continue
+                if entry.get("speaker_label") != change["from_label"]:
+                    continue
+                entry["speaker_label"] = change["to_label"]
+                # `speaker` is the display name; it only tracks the label while
+                # it still *is* the label. A name resolved from an enrollment or
+                # a text hint must not be overwritten here — finalize_labels
+                # runs next and owns that field.
+                if entry.get("speaker") == change["from_label"]:
+                    entry["speaker"] = change["to_label"]
+                entry["color"] = self._color_for(change["to_label"])
+                applied += 1
+                break
+
+        if applied:
+            logger.info(
+                f"[{self.session_id}] applied {applied} retroactive speaker "
+                f"correction(s) deferred during streaming"
+            )
+        relabels.clear()
+        return applied
 
     def apply_offline_recluster(self) -> dict:
         """
@@ -273,6 +324,164 @@ class MeetingSession:
             if m:
                 max_id = max(max_id, int(m.group(1)))
         self.diarizer._next_label_id = max_id + 1
+
+    def apply_resegmentation(self) -> int:
+        """
+        Re-cut lines that hold more than one speaker, against known voices.
+
+        SCD decides where a speaker changes by comparing each short window to
+        the window before it — noisy against noisy — so it either misses a
+        short turn or invents cuts. Once the meeting is complete there is a
+        better reference available than the neighbouring window: the speaker
+        centroids themselves, averaged over every confident second each
+        speaker owns. models/resegment.py scores windows against those.
+
+        Only lines this pass finds to be mixed are touched, and those are
+        re-transcribed per piece, because the text of a line that turned out
+        to hold two speakers belongs to neither of them as a whole. Everything
+        else keeps the text it already has, so the cost is a window scan plus
+        ASR on the handful of lines that were actually wrong.
+
+        Uploads only: it needs the full audio and the finished cluster set.
+        """
+        if self._full_audio is None or not self.transcript:
+            return 0
+        if len(self._embeddings) != len(self.transcript):
+            logger.warning(
+                f"[{self.session_id}] embedding/transcript mismatch "
+                f"{len(self._embeddings)}/{len(self.transcript)} — skip resegmentation"
+            )
+            return 0
+
+        from models.embedding import get_embedding
+        from models.resegment import build_references, refine_span
+
+        references = build_references(self._embeddings, self.transcript)
+        if len(references) < 2:
+            return 0
+
+        rebuilt: list[dict] = []
+        rebuilt_embeddings: list = []
+        changed = 0
+
+        # _transcribe_piece appends to self.transcript; swap it out so the
+        # rewrite builds a new list instead of growing the one being walked.
+        original_transcript = self.transcript
+        original_embeddings = self._embeddings
+        original_callback = self._on_transcript_update
+        self._on_transcript_update = None
+
+        try:
+            for entry, embedding in zip(original_transcript, original_embeddings):
+                start = float(entry.get("start_sec") or 0)
+                end = float(entry.get("end_sec") or 0)
+                label = entry.get("speaker_label")
+
+                # An overlap line is already attributed to two people on
+                # purpose; cutting it into one speaker per piece would throw
+                # that away.
+                if entry.get("is_overlap") or end <= start or not label:
+                    rebuilt.append(entry)
+                    rebuilt_embeddings.append(embedding)
+                    continue
+
+                pieces = refine_span(
+                    self._full_audio, start, end, references,
+                    sample_rate=SAMPLE_RATE, embed=get_embedding,
+                )
+                if len(pieces) < 2:
+                    # Unchanged, including when the single piece disagrees with
+                    # the current label — reassigning a whole line is the
+                    # offline recluster's job, decided over the meeting rather
+                    # than from one span.
+                    rebuilt.append(entry)
+                    rebuilt_embeddings.append(embedding)
+                    continue
+
+                logger.info(
+                    f"[{self.session_id}] resegmenting {start:.1f}-{end:.1f}s "
+                    f"({entry.get('speaker_label')}) into "
+                    f"{[(round(a, 1), round(b, 1), l) for a, b, l in pieces]}"
+                )
+
+                self.transcript = []
+                self._embeddings = []
+                produced = self._retranscribe_pieces(pieces, embedding)
+                self.transcript = original_transcript
+                self._embeddings = original_embeddings
+
+                if produced:
+                    rebuilt.extend(produced)
+                    rebuilt_embeddings.extend(self._resegment_embeddings)
+                    changed += 1
+                else:
+                    # Re-transcription produced nothing usable (too short, or
+                    # the guards rejected every piece). Keeping the original
+                    # line is strictly better than dropping speech.
+                    rebuilt.append(entry)
+                    rebuilt_embeddings.append(embedding)
+        finally:
+            self.transcript = original_transcript
+            self._embeddings = original_embeddings
+            self._on_transcript_update = original_callback
+
+        if not changed:
+            return 0
+
+        self.transcript = rebuilt
+        self._embeddings = rebuilt_embeddings
+        self.transcript.sort(key=lambda e: float(e.get("start_sec") or 0))
+        logger.info(
+            f"[{self.session_id}] resegmentation rewrote {changed} mixed-speaker line(s); "
+            f"{len(original_transcript)} -> {len(self.transcript)} lines"
+        )
+        return changed
+
+    def _retranscribe_pieces(self, pieces, fallback_embedding) -> list[dict]:
+        """Embed, label and transcribe each piece of a line being re-cut."""
+        from models.embedding import get_embedding
+
+        self._resegment_embeddings = []
+        produced: list[dict] = []
+
+        for piece_start, piece_end, label in pieces:
+            segment = self._full_audio[
+                int(piece_start * SAMPLE_RATE) : int(piece_end * SAMPLE_RATE)
+            ]
+            if len(segment) < _get_min_speech_samples():
+                continue
+            try:
+                embedding = get_embedding(segment)
+            except Exception as exc:
+                logger.warning(f"[{piece_start:.1f}s] resegment embed failed: {exc}")
+                embedding = np.asarray(fallback_embedding, dtype=np.float32)
+
+            speaker_label = label or ""
+            if not speaker_label:
+                continue
+
+            centroid = self.diarizer.get_centroid(speaker_label)
+            stable = centroid if centroid is not None else embedding
+            # Voice profiles do not name anyone here either — same rule as
+            # _process_subsegment. A spoken name is applied afterwards by
+            # finalize_labels; until then the label stays Speaker_XX.
+            identified_as, confidence = UNKNOWN, 0.0
+
+            before = len(self.transcript)
+            self._transcribe_piece(
+                piece_start, piece_end, segment,
+                speaker_label=speaker_label,
+                embedding=embedding,
+                stable_embedding=stable,
+                identified_as=identified_as,
+                confidence=confidence,
+                was_split=True,
+            )
+            if len(self.transcript) > before:
+                produced.append(self.transcript[-1])
+                self._resegment_embeddings.append(self._embeddings[-1])
+
+        return produced
 
     def finalize_labels(self) -> None:
         """

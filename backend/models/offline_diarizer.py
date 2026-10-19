@@ -337,6 +337,67 @@ def _reduction_is_supported(
     return True, "voices_agree"
 
 
+def _split_is_supported(
+    embeddings: np.ndarray,
+    streaming_assignment: np.ndarray,
+    offline_assignment: np.ndarray,
+    transcript: list[dict],
+) -> tuple[bool, str]:
+    """
+    Is the offline pass allowed to break one streaming cluster into several?
+
+    _reduction_is_supported interrogates every merge this assignment implies.
+    Nothing interrogated the opposite direction, so a split was applied
+    unchecked whenever silhouette asked for a larger k — and silhouette asks
+    for a larger k readily, because it is scoring embeddings of ASR-length
+    pieces, some barely a second long, where an ECAPA vector carries more
+    phoneme than voice.
+
+    Measured on a 3-speaker recording: the offline pass took four streaming
+    clusters to seven by peeling a 0.6s line off a 42s speaker, a 0.4s line
+    off a 10s speaker, and two short pieces off a 24s speaker. Each peeled
+    part's centroid sat far from the cluster it left (similarity 0.06-0.20),
+    so a mirror of the merge gate's similarity test would have waved all four
+    through: a noisy vector is distant from everything, and distance from
+    everything is what that test reads as a different person.
+
+    So this gate asks the question the merge gate's middle band already asks —
+    is there enough speech here to be a participant at all? A part too small
+    to stand as a speaker is an over-split being promoted, not a speaker being
+    discovered, whatever its centroid says. One suspect part rejects the whole
+    assignment, matching _reduction_is_supported's behaviour: these are two
+    halves of one decision about whether to trust this clustering.
+    """
+    offline_stats = _cluster_stats(embeddings, offline_assignment, transcript)
+
+    total_lines = len(transcript)
+    min_lines = max(2, total_lines // 25)
+    min_seconds = max(3.0, sum(
+        max(float(t.get("end_sec") or 0) - float(t.get("start_sec") or 0), 0)
+        for t in transcript
+    ) / max(total_lines * 2, 1))
+
+    # Which offline clusters each streaming cluster would be divided into.
+    grouped: dict[int, set[int]] = {}
+    for streaming_cid, offline_cid in zip(streaming_assignment, offline_assignment):
+        grouped.setdefault(int(streaming_cid), set()).add(int(offline_cid))
+
+    for streaming_cid, offline_cids in grouped.items():
+        if len(offline_cids) < 2:
+            continue
+        for offline_cid in sorted(offline_cids):
+            data = offline_stats.get(offline_cid)
+            if data is None:
+                continue
+            if data["count"] < min_lines or data["seconds"] < min_seconds:
+                return False, (
+                    f"split_peels_fragment:{data['seconds']:.1f}s/"
+                    f"{data['count']}line"
+                )
+
+    return True, "split_parts_established"
+
+
 def merge_fragment_clusters(
     embeddings: np.ndarray,
     assignment: np.ndarray,
@@ -550,16 +611,26 @@ def recluster_from_embeddings(
             closest_valid_idx = valid_indices[np.argmin(distances)]
             assignment[z_idx] = assignment[closest_valid_idx]
 
-        supported, why = (
+        # Both directions are checked. Guarding only the reduction left the
+        # split path able to raise the speaker count on no evidence, which is
+        # the same error in the other direction — and the more damaging one
+        # here, since the offline pass exists because uploads over-split.
+        reduction_ok, reduction_why = (
             _reduction_is_supported(emb, streaming_assignment, assignment, transcript)
             if best_k < streaming_label_count
             else (True, "no_reduction")
         )
+        split_ok, split_why = _split_is_supported(
+            emb, streaming_assignment, assignment, transcript
+        )
+        supported = reduction_ok and split_ok
+        why = reduction_why if not reduction_ok else split_why
 
         if not supported:
             logger.info(
-                f"offline recluster: silhouette picked k={best_k} < streaming_k={streaming_label_count} "
-                f"but the implied merge was rejected ({why}) — keeping streaming speaker clusters"
+                f"offline recluster: silhouette picked k={best_k} vs "
+                f"streaming_k={streaming_label_count} but the implied relabel was "
+                f"rejected ({why}) — keeping streaming speaker clusters"
             )
             assignment = streaming_assignment.copy()
             info.update(

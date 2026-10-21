@@ -105,7 +105,7 @@ def _call_ollama(prompt: str) -> str | None:
         with urllib.request.urlopen(req, timeout=TRANSCRIPT_CLEANUP_TIMEOUT_SECONDS) as resp:
             body = json.loads(resp.read().decode())
             return (body.get("response") or "").strip()
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    except Exception as exc:  # URLError, timeout, bad JSON, a dropped connection: all mean "no cleanup"
         logger.warning(f"transcript cleanup LLM unavailable: {exc}")
         return None
 
@@ -146,9 +146,19 @@ def cleanup_turns(
     updated: list[dict] = []
 
     if llm_on and len(turns) > batch_size:
-        # Batch adjacent turns for fewer LLM calls on long meetings.
-        for i in range(0, len(turns), batch_size):
-            chunk = turns[i : i + batch_size]
+        # Batch adjacent turns for fewer LLM calls on long meetings — but
+        # never across a speaker change. The batch comes back as one block
+        # that is re-split by word count, and words that drift across a
+        # split land on the wrong turn; within one speaker that is harmless,
+        # between two it puts B's words in A's mouth.
+        batches: list[list[dict]] = []
+        for turn in turns:
+            same_speaker = batches and batches[-1][-1].get("speaker_label") == turn.get("speaker_label")
+            if same_speaker and len(batches[-1]) < batch_size:
+                batches[-1].append(turn)
+            else:
+                batches.append([turn])
+        for chunk in batches:
             combined_raw = "\n".join(t.get("raw_text") or t.get("text") or "" for t in chunk)
             cleaned, engine = cleanup_turn_text(combined_raw, use_llm=True)
             if engine == "llm" and len(chunk) > 1:

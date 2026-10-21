@@ -17,7 +17,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from audio_utils import load_audio_file
 from stt.local.local_adapter import LocalSTTAdapter
 from stt.cloud.sarvam_provider import SarvamProvider
-from stt.cloud.google_chirp_provider import GoogleChirpProvider
 
 
 def compare_file(audio_path: str, hint_language: str = "en-IN"):
@@ -36,7 +35,6 @@ def compare_file(audio_path: str, hint_language: str = "en-IN"):
     providers = [
         ("1. Local STT (Whisper / IndicConformer)", LocalSTTAdapter()),
         ("2. Cloud STT - Sarvam AI (saaras:v3)", SarvamProvider()),
-        ("3. Cloud STT - Google Cloud (chirp_3)", GoogleChirpProvider()),
     ]
 
     results = []

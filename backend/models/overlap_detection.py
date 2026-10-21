@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 
 import numpy as np
 from scipy.spatial.distance import cosine
@@ -49,6 +50,9 @@ from config import (
 from models.speaker_matcher import UNKNOWN
 
 logger = logging.getLogger("overlap_detection")
+
+_load_failed_at = 0.0
+OVERLAP_MODEL_RETRY_SECONDS = 600.0
 
 _GENERIC_LABEL = re.compile(r"(?i)^speaker[_\s]?\d+$")
 
@@ -118,10 +122,14 @@ def overlap_regions(audio: np.ndarray) -> list[tuple[float, float]] | None:
     pyannote, no Hugging Face token, terms not accepted); the caller then
     falls back to the voice-print test. A failed load is not retried.
     """
-    global _pipeline, _load_error
+    global _pipeline, _load_error, _load_failed_at
 
     if _load_error is not None:
-        return None
+        # A download that failed (network, Hugging Face down) is tried again
+        # later; a permanent problem (no token) just keeps the fallback.
+        if time.monotonic() - _load_failed_at < OVERLAP_MODEL_RETRY_SECONDS:
+            return None
+        _load_error = None
     if _pipeline is None:
         try:
             from huggingface_hub import hf_hub_download
@@ -136,6 +144,7 @@ def overlap_regions(audio: np.ndarray) -> list[tuple[float, float]] | None:
             _pipeline = pipeline
         except Exception as exc:
             _load_error = exc
+            _load_failed_at = time.monotonic()
             logger.warning(
                 f"overlap model '{OVERLAP_MODEL}' unavailable ({exc}); using the voice-print "
                 f"fallback. Set HF_TOKEN and accept the model terms on huggingface.co to enable it."

@@ -108,7 +108,11 @@ export default function AnalyticsPage() {
       if (Array.isArray(m.insights?.pending)) {
         m.insights.pending.forEach((item, idx) => {
           if (!item) return
-          const text = typeof item === 'string' ? item : item.text || item.title || item.task
+          // The summarizer writes pending items as {topic, description, owner}.
+          const text =
+            typeof item === 'string'
+              ? item
+              : item.topic || item.description || item.text || item.title || item.task
           if (text && !rawTasks.some((t) => t.text === text)) {
             rawTasks.push({
               id: `${m.id}-pen-${idx}`,
@@ -142,13 +146,17 @@ export default function AnalyticsPage() {
       if (Array.isArray(m.insights?.commitments)) {
         m.insights.commitments.forEach((item, idx) => {
           if (!item) return
-          const text = typeof item === 'string' ? item : item.text || item.commitment || item.title
+          // Commitments come as {owner, action, timing}.
+          const text =
+            typeof item === 'string'
+              ? item
+              : item.action || item.text || item.commitment || item.title
           if (text && !rawTasks.some((t) => t.text === text)) {
             rawTasks.push({
               id: `${m.id}-com-${idx}`,
               text,
-              assignee: item.speaker || item.assignee || 'Unassigned',
-              dueDate: 'Not set',
+              assignee: item.owner || item.speaker || item.assignee || 'Unassigned',
+              dueDate: item.timing || 'Not set',
               completed: false,
             })
           }

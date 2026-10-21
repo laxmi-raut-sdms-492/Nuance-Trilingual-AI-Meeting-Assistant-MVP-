@@ -50,6 +50,9 @@ from config import (
 from models.text_lang_id import classify_text_language, TEXT_LANG_MIN_CONFIDENCE
 from models.model_lock import serialized
 
+# Below this length the segment's own language ranking outranks its context.
+SHORT_SEGMENT_SECONDS = 5.0
+
 logger = logging.getLogger("asr")
 
 _model = None
@@ -310,6 +313,22 @@ def transcribe_with_context(
         ]
     )
     detected, prob = ranked[0]
+
+    s0 = max(0, int(start_sec * SAMPLE_RATE))
+    s1 = min(len(full_audio), int(end_sec * SAMPLE_RATE))
+    seg_audio = full_audio[s0:s1]
+
+    # The padded clip is mostly the neighbours when the segment is short:
+    # a 2s English reply between Marathi turns was ranked Marathi from 16s
+    # of Marathi around it. When the segment alone is sure of a different
+    # language, the segment wins; the context only decides when it is not.
+    if seg_duration < SHORT_SEGMENT_SECONDS:
+        own = language_ranking(seg_audio)
+        own_language, own_prob = own[0]
+        if own_language != detected and own_prob >= LANGUAGE_DETECT_MIN_PROB:
+            ranked = own
+            detected, prob = own_language, own_prob
+
     language = detected
     used_fallback = prob < LANGUAGE_DETECT_MIN_PROB
     if used_fallback:
@@ -319,10 +338,6 @@ def transcribe_with_context(
             language = detected
         else:
             language = DEFAULT_LANGUAGE
-
-    s0 = max(0, int(start_sec * SAMPLE_RATE))
-    s1 = min(len(full_audio), int(end_sec * SAMPLE_RATE))
-    seg_audio = full_audio[s0:s1]
 
     flag_ranked = ranked
     if mixed_language_signal(ranked)[1]:

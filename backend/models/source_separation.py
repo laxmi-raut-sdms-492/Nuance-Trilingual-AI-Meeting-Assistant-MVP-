@@ -57,14 +57,28 @@ def separate_audio_streams(audio: np.ndarray) -> tuple[np.ndarray, np.ndarray] |
         return None
 
     try:
-        # Prepare tensor (batch=1, samples)
+        import torchaudio.functional as AF
+
+        # The default SepFormer (wsj02mix) is an 8 kHz model. Fed 16 kHz
+        # audio as if it were 8 kHz it hears everything an octave down and
+        # separates badly, so the clip is resampled to the model's rate and
+        # the streams brought back to ours.
+        model_sr = int(getattr(getattr(separator, "hparams", None), "sample_rate", SAMPLE_RATE) or SAMPLE_RATE)
         tensor_audio = torch.from_numpy(audio).unsqueeze(0).float()
+        if model_sr != SAMPLE_RATE:
+            tensor_audio = AF.resample(tensor_audio, SAMPLE_RATE, model_sr)
         with torch.no_grad():
             est_sources = separator.separate_batch(tensor_audio)
 
         # est_sources shape: [1, samples, n_sources]
-        s1 = est_sources[0, :, 0].cpu().numpy().astype(np.float32)
-        s2 = est_sources[0, :, 1].cpu().numpy().astype(np.float32)
+        streams = est_sources[0].T  # [n_sources, samples]
+        if model_sr != SAMPLE_RATE:
+            streams = AF.resample(streams, model_sr, SAMPLE_RATE)
+        streams = streams[:, : len(audio)]
+        if streams.shape[1] < len(audio):
+            streams = torch.nn.functional.pad(streams, (0, len(audio) - streams.shape[1]))
+        s1 = streams[0].cpu().numpy().astype(np.float32)
+        s2 = streams[1].cpu().numpy().astype(np.float32)
 
         # Normalize outputs to original peak
         orig_peak = np.max(np.abs(audio)) + 1e-9

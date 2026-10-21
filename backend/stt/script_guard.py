@@ -48,8 +48,15 @@ def _is_foreign_letter(ch: str) -> bool:
 
 
 def foreign_letter_ratio(text: str) -> float:
-    """Share of letters that are neither Latin nor Devanagari (0.0 - 1.0)."""
-    letters = [c for c in (text or "") if _is_script_char(c)]
+    """
+    Share of letters that are neither Latin nor Devanagari (0.0 - 1.0).
+
+    Digits do not count either way: "OK ১২৩" is an English line with a
+    figure in a stray script, and the figure is stripped, not the line.
+    Only when a text holds no letters at all do its digits speak for it.
+    """
+    chars = [c for c in (text or "") if _is_script_char(c)]
+    letters = [c for c in chars if unicodedata.category(c) != "Nd"] or chars
     if not letters:
         return 0.0
     return sum(_is_foreign_letter(c) for c in letters) / len(letters)

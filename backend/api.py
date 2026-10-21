@@ -164,13 +164,13 @@ def _without_transcript(meeting: dict) -> dict:
     Speaker stats and language breakdown stay — the charts do use those.
     """
     trimmed = {k: v for k, v in meeting.items() if k != "transcript"}
-    trimmed["transcriptLineCount"] = len(meeting.get("transcript") or [])
+    trimmed.setdefault("transcriptLineCount", len(meeting.get("transcript") or []))
     return trimmed
 
 
 @router.get("/meetings")
 def list_meetings():
-    return {"meetings": [_without_transcript(m) for m in store.list_meetings()]}
+    return {"meetings": [_without_transcript(m) for m in store.list_meetings(with_transcript=False)]}
 
 
 @router.get("/meetings/trash")
@@ -882,9 +882,10 @@ def _generate_summary(meeting_id: str, transcript: list[dict]) -> dict:
         # IDF corpus for keyword ranking: the transcripts of other recent
         # meetings. Bounded, because this loads their transcript lines.
         background = []
-        for other in store.list_meetings()[:SUMMARY_KEYWORD_IDF_MEETINGS]:
-            if other["id"] == meeting_id:
+        for summary in store.list_meetings(with_transcript=False)[:SUMMARY_KEYWORD_IDF_MEETINGS]:
+            if summary["id"] == meeting_id:
                 continue
+            other = store.get_meeting(summary["id"]) or {}
             background.append(" ".join(l.get("text") or "" for l in other.get("transcript") or []))
 
         result = summarizer.summarize(transcript, background_documents=background)

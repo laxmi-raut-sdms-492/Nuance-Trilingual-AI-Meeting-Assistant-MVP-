@@ -10,7 +10,6 @@ from stt.factory import get_stt_adapter
 from stt.local.local_adapter import LocalSTTAdapter
 from stt.cloud.cloud_adapter import CloudSTTAdapter
 from stt.cloud.sarvam_provider import SarvamProvider, LANGUAGE_MAPPING
-from stt.cloud.google_chirp_provider import GoogleChirpProvider
 
 
 @pytest.fixture
@@ -39,14 +38,6 @@ def test_stt_factory_cloud_sarvam():
     assert adapter.model_name == "saaras:v3"
 
 
-def test_stt_factory_cloud_google():
-    adapter = get_stt_adapter("cloud", "google")
-    assert isinstance(adapter, CloudSTTAdapter)
-    assert adapter.adapter_type == "cloud"
-    assert adapter.provider_name == "google"
-    assert adapter.model_name == "chirp_3"
-
-
 def test_local_adapter_transcribe_structure(dummy_audio):
     adapter = LocalSTTAdapter()
     res = adapter.transcribe(dummy_audio, language="en")
@@ -73,8 +64,3 @@ def test_sarvam_provider_missing_key(dummy_audio):
     with pytest.raises(STTProviderError, match="SARVAM_API_KEY is not configured"):
         provider.transcribe(dummy_audio)
 
-
-def test_google_chirp_provider_missing_project(dummy_audio):
-    provider = GoogleChirpProvider(project_id="")
-    with pytest.raises(ValueError, match="GOOGLE_CLOUD_PROJECT is not configured"):
-        provider.transcribe(dummy_audio)

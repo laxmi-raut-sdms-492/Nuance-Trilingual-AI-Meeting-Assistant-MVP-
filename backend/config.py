@@ -8,7 +8,7 @@ load_dotenv()
 
 # --- STT Adapter Architecture ---
 STT_ADAPTER = os.getenv("STT_ADAPTER", "local").lower()            # local | cloud
-CLOUD_STT_PROVIDER = os.getenv("CLOUD_STT_PROVIDER", "sarvam").lower()  # sarvam | google
+CLOUD_STT_PROVIDER = os.getenv("CLOUD_STT_PROVIDER", "sarvam").lower()  # sarvam (the only cloud provider)
 
 # Sarvam STT Config
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY", "")

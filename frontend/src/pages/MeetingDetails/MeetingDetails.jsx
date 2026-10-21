@@ -493,6 +493,7 @@ export default function MeetingDetails() {
   const autoLabeledRef = useRef(false)
   const autoIdentifyPassesRef = useRef(0)
   const activeLineRef = useRef(null)
+  const loadSeqRef = useRef(0)
 
   // The line object itself, not its index: the transcript is rendered through
   // a search filter, so positions in the full list don't match the DOM.
@@ -513,11 +514,18 @@ export default function MeetingDetails() {
   }, [activeLine])
 
   const load = useCallback(async () => {
+    // Only the newest request may touch the page: a slow poll, or the
+    // previous meeting's response after navigating, must not land on top
+    // of fresher data.
+    const seq = ++loadSeqRef.current
     try {
-      setMeeting(await fetchMeeting(id))
+      const data = await fetchMeeting(id)
+      if (seq !== loadSeqRef.current) return
+      setMeeting(data)
       setNotFound(false)
       setLoadError(null)
     } catch (err) {
+      if (seq !== loadSeqRef.current) return
       if (err?.response?.status === 404) {
         setMeeting(null)
         setNotFound(true)
@@ -525,7 +533,7 @@ export default function MeetingDetails() {
         setLoadError(describeError(err))
       }
     } finally {
-      setLoading(false)
+      if (seq === loadSeqRef.current) setLoading(false)
     }
   }, [id, fetchMeeting])
 
@@ -1422,7 +1430,9 @@ function downloadTranscript(meeting) {
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `${meeting.title.replace(/[^\w\d]+/g, '-').toLowerCase()}-transcript.txt`
+  // Unicode-aware: an all-Devanagari title used to export as "-transcript.txt".
+  const slug = meeting.title.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').toLowerCase()
+  link.download = `${slug || 'meeting'}-transcript.txt`
   link.click()
   URL.revokeObjectURL(url)
 }

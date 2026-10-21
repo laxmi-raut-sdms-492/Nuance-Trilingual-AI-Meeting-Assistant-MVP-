@@ -69,23 +69,24 @@ def cleanup_stuck_processing_meetings():
             stuck = session.scalars(
                 select(Meeting).where(Meeting.status == "Processing")
             ).all()
+            from db import repository as store
+            from api import enqueue_job, process_meeting
+
             for m in stuck:
-                line_count = session.scalar(
-                    select(func.count(TranscriptLine.id)).where(TranscriptLine.meeting_id == m.id)
-                ) or 0
                 # Lines are saved while a meeting is still being processed
                 # (that is how the progress bar moves), so "has lines" does
-                # not mean "finished". A meeting the restart interrupted is
-                # not complete, whatever it managed to save; say so.
-                m.status = "Failed"
-                m.progress = 0
-                if line_count > 0:
-                    m.error = (
-                        "Interrupted by a server restart before it finished; "
-                        "the partial transcript is kept. Re-attach the audio to run it again."
-                    )
+                # not mean "finished". A meeting the restart interrupted
+                # still has its audio on disk, so it simply goes back in
+                # the queue and runs again from the start.
+                if store.audio_path(m.id):
+                    m.progress = 0
+                    m.error = None
+                    enqueue_job(process_meeting, m.id)
+                    logging.getLogger("startup").info(f"re-queued {m.id} interrupted by restart")
                 else:
-                    m.error = "Interrupted by server restart. Please re-upload audio."
+                    m.status = "Failed"
+                    m.progress = 0
+                    m.error = "Interrupted by server restart and its audio is missing. Please re-upload."
     except Exception as exc:
         logging.getLogger("startup").warning(f"Could not cleanup stuck processing meetings: {exc}")
 

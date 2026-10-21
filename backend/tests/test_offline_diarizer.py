@@ -139,3 +139,26 @@ def test_recluster_handles_zero_vectors():
     assert info is not None
     assert len(new_transcript) == len(transcript)
 
+
+
+def test_overlap_lines_follow_the_renamed_speakers():
+    """A separated overlap names its two voices by old labels; they move with the recluster."""
+    import numpy as np
+
+    transcript = [
+        {"start_sec": 0, "end_sec": 2, "speaker_label": "Speaker_00", "speaker": "Speaker_00"},
+        {"start_sec": 2, "end_sec": 4, "speaker_label": "Speaker_05", "speaker": "Speaker_05"},
+        {
+            "start_sec": 4, "end_sec": 6, "is_overlap": True, "is_separated_overlap": True,
+            "speaker_label": "Speaker_00 + Speaker_05", "speaker": "Speaker_00 + Speaker_05",
+            "candidate_labels": ["Speaker_00", "Speaker_05"],
+            "attributed_spans": [{"speaker_label": "Speaker_05", "text": "yes"}],
+        },
+    ]
+    # The recluster puts the first two lines in clusters 0 and 1.
+    out = apply_assignment_to_transcript(transcript, np.array([0, 1, 0]))
+
+    assert out[1]["speaker_label"] == "Speaker_01"
+    assert out[2]["candidate_labels"] == ["Speaker_00", "Speaker_01"]
+    assert out[2]["speaker"] == "Speaker_00 + Speaker_01"
+    assert out[2]["attributed_spans"][0]["speaker_label"] == "Speaker_01"

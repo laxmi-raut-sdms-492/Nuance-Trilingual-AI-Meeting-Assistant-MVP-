@@ -208,6 +208,10 @@ def batch_vad_segments(
             sampling_rate=SAMPLE_RATE,
             return_seconds=True,
             threshold=threshold,
+            # Unbroken speech is cut at the same length the live path uses:
+            # a 40s stretch with no pause was sent whole, and the cloud
+            # engine rejects clips that long, so it came back as nothing.
+            max_speech_duration_s=MAX_SEGMENT_SECONDS,
         )
 
     segments: list[dict] = []

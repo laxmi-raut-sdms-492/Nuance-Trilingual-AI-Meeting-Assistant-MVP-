@@ -80,7 +80,7 @@ def split_on_speaker_change(audio: np.ndarray) -> list[tuple[int, int]]:
         for i in range(len(window_embeddings) - 1)
     ]
 
-    change_points = _find_change_points(distances, window_starts)
+    change_points = _find_change_points(distances, window_starts, hop_samples, window_samples)
     change_points = _enforce_min_spacing(change_points, n)
 
     if not change_points:
@@ -108,11 +108,19 @@ def _adaptive_change_threshold(distances: list[float]) -> float:
     return min(0.35, max(SCD_CHANGE_THRESHOLD, adaptive))
 
 
-def _find_change_points(distances: list[float], window_starts: list[int], hop_samples: int | None = None) -> list[int]:
+def _find_change_points(
+    distances: list[float],
+    window_starts: list[int],
+    hop_samples: int | None = None,
+    window_samples: int | None = None,
+) -> list[int]:
     """Local maxima and strong spikes in the distance sequence that clear the threshold."""
     if hop_samples is None:
         from config import SCD_HOP_SECONDS
         hop_samples = int(SCD_HOP_SECONDS * SAMPLE_RATE)
+    if window_samples is None:
+        from config import SCD_WINDOW_SECONDS
+        window_samples = int(SCD_WINDOW_SECONDS * SAMPLE_RATE)
 
     threshold = _adaptive_change_threshold(distances)
     points = []
@@ -125,7 +133,12 @@ def _find_change_points(distances: list[float], window_starts: list[int], hop_sa
         if is_left_ok or is_right_ok:
             window_slice = distances[max(0, i - 1) : min(len(distances), i + 2)]
             if d == max(window_slice):
-                change_sample = window_starts[i] + hop_samples
+                # distances[i] compares window i with window i+1, which
+                # overlap. The pair differs most when the new voice starts
+                # in the middle of that overlap, not at the start of window
+                # i+1: placing it there put the next speaker's first
+                # syllable on the previous one.
+                change_sample = window_starts[i] + (window_samples + hop_samples) // 2
                 points.append(change_sample)
                 logger.debug(
                     f"SCD change @ window {i}: dist={d:.3f} > {threshold:.3f}"

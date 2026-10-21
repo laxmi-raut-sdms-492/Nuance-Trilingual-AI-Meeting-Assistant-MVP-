@@ -633,6 +633,23 @@ def apply_assignment_to_transcript(
     from models.speaker_matcher import UNKNOWN
 
     label_map = _labels_by_first_appearance(assignment)
+
+    # Overlap lines name two speakers by their old labels. Those labels are
+    # renamed through the single-speaker lines: each old label goes to
+    # whichever new label most of its lines landed on. Without this, a
+    # separated overlap kept "Speaker_05" after the recluster had removed it.
+    votes: dict[str, dict[str, int]] = {}
+    for entry, cluster_id in zip(transcript, assignment):
+        if entry.get("is_overlap"):
+            continue
+        old = str(entry.get("speaker_label") or "")
+        new = label_map[int(cluster_id)]
+        votes.setdefault(old, {})[new] = votes.setdefault(old, {}).get(new, 0) + 1
+    rename = {old: max(c, key=c.get) for old, c in votes.items()}
+
+    def _renamed(label):
+        return rename.get(str(label), label)
+
     updated = []
     for entry, cluster_id in zip(transcript, assignment):
         row = dict(entry)
@@ -642,6 +659,21 @@ def apply_assignment_to_transcript(
             row["speaker"] = new_label
             row["identified_as"] = UNKNOWN
             row["confidence"] = 0.0
+        else:
+            labels = [_renamed(l) for l in (row.get("candidate_labels") or [])]
+            if labels:
+                row["candidate_labels"] = labels
+                row["candidate_speakers"] = list(labels)
+                combined = " + ".join(labels)
+                row["speaker_label"] = combined
+                row["speaker"] = combined
+                row["identified_as"] = combined
+            if isinstance(row.get("attributed_spans"), list):
+                row["attributed_spans"] = [
+                    {**span, "speaker_label": _renamed(span.get("speaker_label"))}
+                    if isinstance(span, dict) else span
+                    for span in row["attributed_spans"]
+                ]
         updated.append(row)
     return updated
 

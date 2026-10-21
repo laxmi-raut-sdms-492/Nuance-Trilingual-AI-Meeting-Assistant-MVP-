@@ -153,8 +153,15 @@ def _clean_speaker_stats(raw_stats: list[dict]) -> list[dict]:
     return res
 
 
-def _to_dict(meeting: Meeting) -> dict:
-    """ORM row -> the exact JSON shape the frontend already consumes."""
+def _to_dict(meeting: Meeting, with_transcript: bool = True) -> dict:
+    """
+    ORM row -> the exact JSON shape the frontend already consumes.
+
+    with_transcript=False leaves the transcript lines unloaded: the list
+    page and every progress tick used to pull, clean and mark every line
+    of every meeting only to drop them again, which is what made the app
+    slow down as meetings accumulated.
+    """
     return {
         "id": meeting.id,
         "title": meeting.title,
@@ -202,7 +209,13 @@ def _to_dict(meeting: Meeting) -> dict:
         ]),
         # clean_transcript also covers meetings stored before the STT
         # script checks existed, without rewriting their rows.
-        "transcript": mark_unclear(clean_transcript([
+        # The list view shows the line count without needing the lines.
+        "transcriptLineCount": (
+            inspect(meeting).session.scalar(
+                select(func.count(TranscriptLine.id)).where(TranscriptLine.meeting_id == meeting.id)
+            ) or 0
+        ) if not with_transcript else len(meeting.transcript_lines),
+        "transcript": [] if not with_transcript else mark_unclear(clean_transcript([
             {
                 "start_sec": t.start_sec,
                 "end_sec": t.end_sec,
@@ -411,14 +424,14 @@ def _apply_children(session, meeting: Meeting, record: dict):
 # Same names and signatures as the old JSON store.
 
 
-def list_meetings() -> list[dict]:
+def list_meetings(with_transcript: bool = True) -> list[dict]:
     with session_scope() as session:
         rows = session.scalars(
             select(Meeting)
             .where(Meeting.deleted_at.is_(None))
             .order_by(Meeting.uploaded_at.desc())
         ).all()
-        return [_to_dict(m) for m in rows]
+        return [_to_dict(m, with_transcript=with_transcript) for m in rows]
 
 
 def get_meeting(meeting_id: str) -> dict | None:
@@ -488,7 +501,9 @@ def update_meeting(meeting_id: str, **updates) -> dict | None:
 
                 _apply_children(session, meeting, updates)
                 session.flush()
-                return _to_dict(meeting)
+                # A progress tick has no use for the transcript; only a call
+                # that rewrote children gets the full record back.
+                return _to_dict(meeting, with_transcript="transcript" in updates)
         except Exception as exc:
             if "deadlock" in str(exc).lower() and attempt < max_retries - 1:
                 time.sleep(0.15 * (attempt + 1))

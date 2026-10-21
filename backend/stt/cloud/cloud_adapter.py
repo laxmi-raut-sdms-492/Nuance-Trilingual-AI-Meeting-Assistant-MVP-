@@ -1,4 +1,4 @@
-"""Cloud STT Adapter wrapping active cloud provider (Sarvam or Google Chirp)."""
+"""Cloud STT Adapter wrapping the active cloud provider (Sarvam)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import numpy as np
 
 from config import CLOUD_STT_PROVIDER
 from stt.base import STTAdapter
-from stt.cloud.google_chirp_provider import GoogleChirpProvider
 from stt.cloud.sarvam_provider import SarvamProvider
 
 logger = logging.getLogger("cloud_stt_adapter")
@@ -17,15 +16,14 @@ class CloudSTTAdapter(STTAdapter):
     """
     Adapter 2: Cloud STT.
     
-    Wraps provider abstraction (SarvamProvider or GoogleChirpProvider).
+    Wraps the provider abstraction (SarvamProvider). Google Chirp was a
+    stub that always returned empty text and has been removed.
     """
 
     def __init__(self, provider_choice: str | None = None):
         choice = (provider_choice or CLOUD_STT_PROVIDER or "sarvam").lower()
         if choice == "sarvam":
             self.provider = SarvamProvider()
-        elif choice == "google":
-            self.provider = GoogleChirpProvider()
         else:
             logger.warning(f"Unknown CLOUD_STT_PROVIDER '{choice}', defaulting to Sarvam")
             self.provider = SarvamProvider()

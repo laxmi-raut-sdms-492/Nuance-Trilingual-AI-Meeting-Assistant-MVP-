@@ -23,7 +23,7 @@ class STTAdapter(abc.ABC):
     @property
     @abc.abstractmethod
     def provider_name(self) -> str:
-        """Return provider name (e.g. 'whisper+indic_conformer', 'sarvam', 'google')."""
+        """Return provider name (e.g. 'whisper+indic_conformer', 'sarvam')."""
         pass
 
     @property
